@@ -18,6 +18,6 @@
 4.	Visium.AUCell.NeighborhoodAnalysis.rmd: Performing gene set enrichment analysis to map each cell subtype on Visium ST, followed by cell neighborhood analysis.
 
 # Notes
-1. Obtain and unzip the BM.zip file to access the data.
+1. Obtain and unzip the [BM_Input.zip](https://drive.google.com/file/d/17vyuxs7EcM6WQYvOo93aTxmh2neRiLaW/view?usp=drive_link) file to access the input files.
 2. The code available here represents the functional code utilized throughout the project. We are in the process of enhancing the ST analysis code and transforming it into a more user-friendly and easily executable version.
 3. Requirements: R (tested with version 4.2.0).
