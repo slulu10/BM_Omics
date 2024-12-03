@@ -1,0 +1,418 @@
+
+#Load ALL CELLS from RDS file (and rename the clusters)
+```{r}
+library(CellChat)
+library(patchwork)
+library(cowplot)
+
+library(ggplot2)
+library(reshape)
+library(dplyr)
+library(ggpubr)
+
+library(ComplexHeatmap)
+library(RColorBrewer)
+
+
+prefix = "Combined.CellChat"
+
+cellchat.GBM <- readRDS("GBM.CellChat.rds")
+cellchat.GBM <- netAnalysis_computeCentrality(cellchat.GBM, slot.name = "netP")
+
+cellchat.GBM.pembro <- readRDS("GBM.pembro.CellChat.rds")
+cellchat.GBM.pembro <- netAnalysis_computeCentrality(cellchat.GBM.pembro, slot.name = "netP")
+
+cellchat.Mets <- readRDS("Mets.CellChat.rds")
+cellchat.Mets <- netAnalysis_computeCentrality(cellchat.Mets, slot.name = "netP")
+
+cellchat.Mets.pembro <- readRDS("Mets.pembro.CellChat.rds")
+cellchat.Mets.pembro <- netAnalysis_computeCentrality(cellchat.Mets.pembro, slot.name = "netP")
+
+object.list <- list(GBM = cellchat.GBM,
+                    GBM.pembro = cellchat.GBM.pembro,
+                    Mets = cellchat.Mets,
+                    Mets.pembro = cellchat.Mets.pembro)
+
+saveRDS(object.list,file=paste(prefix,"ObList.rds",sep="."))
+#object.list = readRDS(file = paste(prefix,"ObList.rds",sep="."))
+
+
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+saveRDS(cellchat,file=paste(prefix,"rds",sep="."))
+#cellchat = readRDS(file=paste(prefix,"rds",sep="."))
+
+
+```
+
+
+#Compare interaction frequency and intensity across different conditions
+```{r}
+
+group_color = c("cyan","blue","pink","red")
+
+##Check number of interaction
+png(filename = paste(prefix,"CompareInteractions.png",sep="."),width=1600,height=800)
+gg1 <- compareInteractions(cellchat, show.legend = F, group = c(1:4),size.text = 14,color.use = group_color)
+gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1:4), measure = "weight",size.text = 14,color.use = group_color)
+gg1 + gg2
+dev.off()
+
+#Compare the overall information flow of each signaling pathway
+png(filename = paste(prefix,"RankNet.GBMvsPembro.png",sep="."),height = 1500, width = 900)
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE, comparison = c(1,2), color.use = group_color [1:2],font.size = 18)
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE, comparison = c(1,2), color.use = group_color [1:2],font.size = 18)
+gg1 + gg2
+dev.off()
+
+write.csv(gg1$data,file=paste(prefix,"RankNet.GBMvsPembro","csv",sep="."))
+
+
+png(filename = paste(prefix,"RankNet.MetsvsPembro.png",sep="."),height = 1500, width = 900)
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE, comparison = c(3,4), color.use = group_color [c(3,4)],font.size = 18, return.data = FALSE)
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE, comparison = c(3,4), color.use = group_color [c(3,4)],font.size = 18, return.data = FALSE)
+gg1 + gg2
+dev.off()
+
+#gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE, comparison = c(3,4), color.use = group_color [c(3,4)],font.size = 18, return.data = TRUE)
+#df=gg1$signaling.contribution
+
+write.csv(gg2$data,file=paste(prefix,"RankNet.MetsvsPembro","csv",sep="."))
+
+
+png(filename = paste(prefix,"RankNet.MetsvsGBM.png",sep="."),height = 1500, width = 900)
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE, comparison = c(1,3), color.use = group_color [c(1,3)],font.size = 18)
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE, comparison = c(1,3), color.use = group_color [c(1,3)],font.size = 18)
+gg1 + gg2
+dev.off()
+
+write.csv(gg1$data,file=paste(prefix,"RankNet.MetsvsGBM","csv",sep="."))
+
+
+png(filename = paste(prefix,"RankNet.MetsvsGBM.Pembro.png",sep="."),height = 1500, width = 900)
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE, comparison = c(2,4), color.use = group_color [c(2,4)],font.size = 18)
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE, comparison = c(2,4), color.use = group_color [c(2,4)],font.size = 18)
+gg1 + gg2
+dev.off()
+
+write.csv(gg1$data,file=paste(prefix,"RankNet.MetsvsGBM.Pembro","csv",sep="."))
+
+```
+
+
+#Compare signaling intensity associated with each cell population
+```{r}
+
+i = 1
+
+#all pathways
+pathway.union <- Reduce(union, list(object.list[[1]]@netP$pathways,
+                                   object.list[[2]]@netP$pathways,
+                                   object.list[[3]]@netP$pathways,
+                                   object.list[[4]]@netP$pathways))
+
+#pathways of interest
+pathways.sub = c("XCR","VCAM","CCL","CXCL",
+                  "CD137","CD70","ICOS","CD80","TIGIT","NECTIN",
+                  "MHC-I","IFN-II",
+                  "ANXA1","TGFb")
+
+pathways.show = pathways.sub # choose the list of pathways to show in the singaling heatmap
+
+png(filename = paste(prefix,"SignalingHeatmap.All.png",sep="."),height = 2000, width = 3000)
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[1]], pattern = "all", signaling = pathways.show, title = names(object.list)[1], width = 22, height = 60,font.size=22,font.size.title=24)
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[2]], pattern = "all", signaling = pathways.show, title = names(object.list)[2], width = 22, height = 60,font.size=22,font.size.title=24)
+ht3 = netAnalysis_signalingRole_heatmap(object.list[[3]], pattern = "all", signaling = pathways.show, title = names(object.list)[3], width = 22, height = 60,font.size=22,font.size.title=24)
+ht4 = netAnalysis_signalingRole_heatmap(object.list[[4]], pattern = "all", signaling = pathways.show, title = names(object.list)[4], width = 22, height = 60,font.size=22,font.size.title=24)
+draw(ht1 + ht2 + ht3 + ht4, ht_gap = unit(0.5, "cm"))
+dev.off()
+
+#extract and replot the total signaling strength from each condition
+sum1 = ht1@top_annotation@anno_list$Strength@fun@var_env$value
+sum2 = ht2@top_annotation@anno_list$Strength@fun@var_env$value
+sum3 = ht3@top_annotation@anno_list$Strength@fun@var_env$value
+sum4 = ht4@top_annotation@anno_list$Strength@fun@var_env$value
+
+mylist <- list("GBM" = as.numeric(sum1),
+               "GBM.pembro" = as.numeric(sum2),
+               "Mets" = as.numeric(sum3),
+               "Mets.pembro" = as.numeric(sum4)
+               )
+
+
+cols.Lymphoid <- c("#A6CEE3","maroon","#FB9A99","#33A02C","#1F78B4","#B2DF8A","#FDBF6F","#FF7F00","#CAB2D6","#6A3D9A","#FFFF99","#B15928","#FFD92F","#E5C494","#E78AC3")
+
+cols.Myeloid = c("#88CCEE","#44AA99","#117733","#999933","#FFCDF3","#CC6677","#FDBF6F",
+         "#FF7F00","#FF1493","#C71585","#F0E68C","#FFDAB9","#C19A6B","#CD7F32",
+         "#6E260E")
+
+color.use = c(cols.Lymphoid,cols.Myeloid)
+
+for(condition in names(mylist)){
+  png(filename = paste(prefix,"SignalingHeatmap.topBarplot",condition,"png",sep="."),height = 200, width = 750)
+
+  t <- barplot(mulist[[condition]], ylim = c(0,0.2), col=color.use)
+  print(t)
+  dev.off()
+}
+
+
+```
+
+#Generate cellchat circle plot
+```{r}
+
+
+pathways.show = c("PARs","CD137","CD70","ANXA1","JAM","CD80","XCR","FASLG","VCAM","TIGIT","NECTIN","ICOS","TGFb","CCL","MHC-I","IFN-II","CXCL")
+
+
+#assign source and target for specific pathways, e.g., MHC-I
+source = c("MG","MG-ISG-IL10","MG-Phagocytosis","Mono","Mono-ISG","MDM-LILRB2","MDM-Angiogenesis","MDM-MRC1-LYVE1","MDM-Lysosome","MDM-IL1B","Complement.Ribo","M.Cycling","cDC2","cDC1","pDC")
+
+target = c("CD8-Tm","CD8-Trm","CD8-Tprog.exh","CD8-ISG","CD8-GZMK-Teff","CD8-GZMH-Teff","CD8-IFNG-Tex","CD8-CXCL13-Tex","CD4-Tcm","CD4-CXCL13-Tex","Treg","IL7R-KLRB1-Tm","CTL.NK","CTL.NK-XCL","T.Cycling")
+
+thresh = 0.05
+
+##circle plot #####
+for(j in 1:length(pathways.show)){
+  pathway = pathways.show[j]
+  #pathway = "MHC-I"
+  png(filename =paste(prefix,"CellInt.Circle",pathway,"png",sep="."),width=1800,height=700)
+  par(mfrow = c(1,4), xpd=TRUE)
+  for (i in 1:length(object.list)) {
+    pairLR <- searchPair(signaling = pathway, pairLR.use = object.list[[i]]@LR$LRsig, key = "pathway_name", matching.exact = T, pair.only = F)
+    net <- object.list[[i]]@net
+    pairLR.use.name <- dimnames(net$prob)[[3]]
+    pairLR.name <- intersect(rownames(pairLR), pairLR.use.name)
+    pairLR <- pairLR[pairLR.name, ]
+    prob <- net$prob
+    pval <- net$pval
+    prob[pval > thresh] <- 0
+    
+    if (length(pairLR.name) > 1) {
+      pairLR.name.use <- pairLR.name[apply(prob[,,pairLR.name], 3, sum) != 0]
+    } else {
+      pairLR.name.use <- pairLR.name[sum(prob[,,pairLR.name]) != 0]
+    }
+
+    nRow <- length(pairLR.name.use)
+    
+    prob <- prob[,,pairLR.name.use]
+    pval <- pval[,,pairLR.name.use]
+  
+    if (length(dim(prob)) == 2) {
+      prob <- replicate(1, prob, simplify="array")
+      pval <- replicate(1, pval, simplify="array")
+    }
+    
+    prob.sum <- apply(prob, c(1,2), sum)
+    netVisual_circle(prob.sum,title.name = paste0(pathway,"Sample ",i, " signaling pathway network"), remove.isolate = FALSE, top = 1, color.use = color.use, vertex.weight =1, vertex.weight.max = NULL, vertex.size.max = NULL, weight.scale = TRUE, edge.weight.max = NULL, edge.width.max=8, vertex.label.cex = 0.01)#, sources.use = source, targets.use = target)
+    
+  }
+  dev.off()
+}
+
+```
+
+#Plot the signaling gene expression distribution using dot plot
+```{r}
+pathway.show = "CD80"
+list = c("CTLA4","CD80","CD86","CD28")
+
+for(j in 1:length(pathways.show)){
+  #pathway = pathways.show[j]
+  pathway = pathway.show
+  panels=list()
+  png(filename =paste(prefix,"GeneEnriched.DotPlot",pathway,"png",sep="."),width=3000,height=600)
+
+  for (i in 1:length(object.list)) {
+    
+      res <- extractEnrichedLR(object.list[[i]], signaling = pathway, geneLR.return = TRUE, enriched.only = TRUE)
+      #genelist = unique(res$geneLR)
+      genelist = list
+  
+      panels[[i]] <- plotGeneExpression(object.list[[i]], signaling = pathway, features = genelist, type = "dot",angle.x = 90, color.use="red")+theme(axis.text.y = element_text(size=24),axis.text.x = element_text(size=19))
+  
+    print(i)
+    print(class(panels[[i]]))
+  }
+  x <- ggarrange(plotlist=panels,ncol=4,nrow=1)
+  print(x)
+  dev.off()
+}
+
+```
+
+
+#Plot the signaling gene expression distribution using boxplot plot across all clusters
+```{r}
+library(Seurat)
+
+RDSfile = "/home/hugolab/DataRAID/BrainMets.April2022/Seurat.MetsGBM.CombinedAnalysis.Apr2022.MinD0.1.sprd5.NN20.seed122.ep1000.rds"
+data.combined = readRDS(RDSfile)
+
+t<-read.table("GBMMets.all.meta.txt",sep="\t",header=T,row.names=1)
+
+ids <- rownames(t)
+subsetObject <- subset(data.combined, cells = ids)
+
+data.input = subsetObject@assays$RNA@data # normalized data matrix
+meta = subsetObject@meta.data
+
+newvals <- c("CD8-IL7R-CD69-Tm" = "CD8-Tm",
+             "CD8-ITGA1-ITGAL-Trm" = "CD8-Trm.ex",
+             "CD8-TCF7-CD226-Tprog.exh" = "CD8-Tprog.ex",
+             "CD8-ISG High" = "CD8-Tem",
+             "CD8-GZMK-CCL4-CCL5-Teff" = "CD8-Tearly.act.2",
+             "CD8-GZMH-GZMA-CD52-Teff" = "CD8-Tearly.act.1",
+             "CD8-VCAM1-IFNG-Tex" = "CD8-Tinter.ex",
+             "CD8-CXCL13-LAG3-Tex" = "CD8-Tterm.ex",
+             "CD4-IL7R-CCR7-CD40LG-Tcm" = "CD4-Tcm",
+             "CD4-CXCL13-CTLA4-Tex" = "CD4-Tex",
+             "Treg" = "Treg",
+             "IL7R-KLRB1-Tm" = "CD4-CD8-Tm",
+             "CTL/NK" = "CTL.NK",
+             "CTL/NK-XCL1-XCL2" = "CTL.NK-XCL",
+             "Lymphoid.Cycling" = "T.Cycling",
+             
+             #Myeloid 
+             "Microglia" = "MG",
+             "Microglia-ISG-IL10" = "MG-ISG",
+             "Microglia-Phagocytosis" = "MG-Phagocytosis",
+             "Monocyte" = "Mono",
+             "Monocyte-ISG" = "Mono-ISG",
+             "Mphage-ISG-MRC1-LILRB2" = "MDSC-ISG",
+             "Mphage-Angiogenesis" = "Mphage-Angiogenesis",
+             "Mphage-MRC1-LYVE1" = "Mphage-MRC1-LYVE1",
+             "Mphage-Lysosome" = "Mphage-Lysosome",
+             "Mphage-IL1B-CCL3-CCL4" = "Mphage-IL1B-CCL",
+             "Complement/RiboHigh" = "Complement.Ribo",
+             "Myeloid.Cycling" = "M.Cycling",                                     
+             
+             #DC             
+             "cDC2" = "cDC2",
+             "cDC1" = "cDC1",
+             "pDC" = "pDC")
+     
+meta$celltype2 = as.character(newvals[as.character(t$celltype)])
+
+data.combined.sub = subset(data.combined, cells = rownames(meta))
+meta = meta[rownames(data.combined.sub@meta.data),]
+data.combined.sub@meta.data$celltype = meta$celltype2
+
+celltypes = c("CD8-Tm",
+              "CD8-Tearly.act.1",
+              "CD8-Tearly.act.2",
+              "CD8-Tem",
+              "CD8-Trm.ex",
+              "CD8-Tprog.ex",
+              "CD8-Tinter.ex",
+              "CD8-Tterm.ex",
+              "CD4-Tcm",
+              "CD4-Tex",
+              "Treg",
+              "CD4-CD8-Tm",
+              "CTL.NK",
+              "CTL.NK-XCL",
+              "T.Cycling",
+              "MG",
+              "MG-ISG",
+              "MG-Phagocytosis",
+              "Complement.Ribo",
+              "Mono",
+              "Mono-ISG",
+              "MDSC-ISG",
+              "Mphage-Angiogenesis",
+              "Mphage-MRC1-LYVE1",
+              "Mphage-Lysosome",
+              "Mphage-IL1B-CCL",
+              "M.Cycling",
+              "cDC2",
+              "cDC1",
+              "pDC")
+
+data.combined.sub@meta.data$celltype = factor(data.combined.sub@meta.data$celltype,
+                                             levels = celltypes)
+
+Idents(data.combined.sub) = data.combined.sub@meta.data$celltype
+
+##generate boxplot instead ####
+Genes = c("NECTIN2","CD226","TIGIT")
+
+Idents(object = data.combined.sub) <- "condition"
+
+expr_gene = data.combined.sub@assays$RNA@data[Genes,]
+expr_gene = as.data.frame(t(expr_gene))
+
+expr_gene$condition = data.combined.sub@meta.data$condition
+expr_gene$type = data.combined.sub@meta.data$celltype
+
+expr_gene_sub <- expr_gene[expr_gene$condition %in% c("GBM.rec","GBM.pembro"),]
+expr_gene_sub$condition = factor(expr_gene_sub$condition, levels = c("GBM.rec","GBM.pembro"))
+
+colors = c("cyan","blue","pink","red")
+
+colnames(expr_gene_sub) = c(gene,"condition","type")
+
+ncol = 1 
+nrow1 = length(Genes)/ncol
+width1 = length(celltypes)*30*ncol
+height1 = nrow1*100
+
+outfile = paste(prefix,"DEG.Boxplot.Celltype.TIGIT.GBM.png",sep=".") #gene expr boxplot in each cell type
+png(filename = outfile,width = width1, height = height1)
+panels=list()
+l=length(colnames(expr_gene_sub))
+
+for(j in 1:length(Genes)){
+#for(i in 1:2){
+  gene2 = Genes[j]
+  data2 = expr_gene_sub[,c(j,l-1,l)]
+  colnames(data2)=c("normExpr","condition","type")
+ 
+  y = ggplot(data=data2, aes(x=type,y=normExpr,fill=condition)) +
+       #geom_violin(trim = FALSE)+
+       geom_boxplot(outlier.colour="black",notch=FALSE)+
+        scale_fill_manual(values=rep(alpha(colors,0.6),length(levels(expr_gene_sub$condition))))+
+      theme(
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size=22),
+        axis.ticks.x = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "none",
+        plot.title=element_text(size=22))+
+      ggtitle(gene2)
+    
+      panels[[j]]=y
+  
+}
+ggarrange(plotlist=panels,ncol=ncol,nrow=nrow1)
+dev.off()
+
+### pairwise wilcox test ###########################
+wilcox.table = data.frame(matrix(ncol = length(Genes), nrow = length(celltypes)))
+rownames(wilcox.table) = celltypes
+colnames(wilcox.table) = Genes
+
+for(j in 1:length(Genes)){
+  gene2 = Genes[j]
+  print(gene2)
+  
+  for(i in 1:length(celltypes)){
+    data2 = expr_gene_sub[,c(j,l-1,l)]
+    colnames(data2)=c("normExpr","condition","type")
+    data2.sub = data2[data2$type %in% c(celltypes[i]) & data2$condition %in% c("GBM.rec","GBM.pembro"),]
+    data2.sub <- droplevels(data2.sub)
+    t <- wilcox.test(normExpr ~ condition, data = data2.sub)
+    
+    #print(celltypes[i])
+    #print(t$p.value)
+    wilcox.table[i,j] = t$p.value
+  }
+}
+
+outfile = paste(prefix,"DEG.Boxplot.Celltype.TIGIT.GBM","csv",sep=".")
+write.csv(wilcox.table, file=outfile)
+
+
+```
+

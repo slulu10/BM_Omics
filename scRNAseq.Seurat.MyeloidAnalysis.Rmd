@@ -1,0 +1,805 @@
+```{r}
+library(Seurat)
+library(Matrix)
+library(dplyr)
+library(cowplot)
+require(data.table)
+library(harmony)
+library("ggplot2")
+library(pals)
+library(ggpubr)
+
+options(bitmapType='cairo') 
+prefix = "Seurat.MetsGBM.CombinedAnalysis.Apr2022.Myeloid"
+infile = "Seurat.MetsGBM.CombinedAnalysis.Apr2022.MinD0.1.sprd5.NN20.seed122.ep1000.rds"
+id_file = "Seurat.MetsGBM.CombinedAnalysis.Apr2022.MinD0.1.sprd5.NN20.seed122.ep1000.Myeloid.ID.txt"
+
+```
+
+```{r}
+ids <- as.character(read.table(id_file, header = FALSE)[,1])
+data.all=readRDS(file=infile)
+data.combined = subset(data.all, cells = ids)
+rm(data.all)
+
+data.combined@meta.data = data.combined@meta.data[!colnames(data.combined@meta.data) %in% c("integrated_snn_res.0.3","integrated_snn_res.0.5","integrated_snn_res.0.7","seurat_clusters")]
+
+ob.list<-SplitObject(data.combined,split.by= "condition")
+
+ob.list.gbm.rec <- SplitObject(ob.list$GBM.rec,split.by= "ID")
+gbm.merge <- merge(
+  x = ob.list.gbm.rec[[1]],
+  y = unlist(ob.list.gbm.rec[2:length(ob.list.gbm.rec)])
+)
+gbm.merge@assays$RNA@var.features <- SelectIntegrationFeatures(ob.list.gbm.rec)
+
+
+ob.list.gbm.pembro <- SplitObject(ob.list$GBM.pembro,split.by= "ID")
+gbm.pembro.merge <- merge(
+  x = ob.list.gbm.pembro[[1]],
+  y = unlist(ob.list.gbm.pembro[2:length(ob.list.gbm.pembro)])
+)
+gbm.pembro.merge@assays$RNA@var.features <- SelectIntegrationFeatures(ob.list.gbm.pembro)
+
+
+ob.list.met <- SplitObject(ob.list$met,split.by= "ID")
+met.merge <- merge(
+  x = ob.list.met[[1]],
+  y = unlist(ob.list.met[2:length(ob.list.met)])
+)
+met.merge@assays$RNA@var.features <- SelectIntegrationFeatures(ob.list.met)
+
+
+ob.list.met.pembro <- SplitObject(ob.list$met.pembro,split.by= "ID")
+met.pembro.merge <- merge(
+  x = ob.list.met.pembro[[1]],
+  y = unlist(ob.list.met.pembro[2:length(ob.list.met.pembro)])
+)
+met.pembro.merge@assays$RNA@var.features <- SelectIntegrationFeatures(ob.list.met.pembro)
+
+ob.list = list(gbm.merge, gbm.pembro.merge, met.merge, met.pembro.merge)
+
+rm(ob.list.gbm.rec)
+rm(ob.list.gbm.pembro)
+rm(ob.list.met)
+rm(ob.list.met.pembro)
+rm(data.combined)
+
+gc()
+
+```
+
+#Run integration, scaling and PCA
+```{r}
+k.filterMax <- min(200, min(sapply(ob.list, ncol)))
+anchors <- FindIntegrationAnchors(object.list = ob.list, k.filter = k.filterMax, anchor.features = 2000)
+data.combined <- IntegrateData(anchorset = anchors, k.weight = k.filterMax)
+
+DefaultAssay(object = data.combined) <- "integrated"
+
+data.combined <- ScaleData(object = data.combined, verbose = TRUE, vars.to.regress = c("percent.mt","percent.ribo","nFeature_RNA","nCount_RNA","S.Score","G2M.Score"))
+
+gc()
+
+data.combined <- RunPCA(object = data.combined, npcs = 30, verbose = TRUE)
+
+rm(anchors)
+gc()
+
+```
+
+#Run harmony
+```{r}
+
+data.combined <- RunHarmony(data.combined, group.by.vars="Dataset",assay.use = "integrated", plot_convergence = TRUE)
+harmony_embeddings <- Embeddings(data.combined, 'harmony')
+
+gc()
+```
+
+
+#Run UMAP for cluster visualization
+```{r}
+minDist = 0.1
+spread1 = 5
+NN = 20
+seedUse = 122
+epoch = 1000
+
+prefix1 = paste(prefix,".MinD",minDist,".sprd",spread1,".NN",NN,".seed",seedUse,".ep",epoch,sep="")
+
+data.combined <- RunUMAP(object = data.combined, reduction = "harmony", dims = 1:30,min.dist = minDist, spread=spread1, n.neighbors=NN, seed.use = seedUse, n.epochs=epoch)
+
+outfile = paste(prefix1,"_UMAP", ".nUMI.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+FeaturePlot(object = data.combined, features = c("nCount_RNA"), min.cutoff = "q9", pt.size = 2) #umi plot
+dev.off()
+
+outfile = paste(prefix1,"_UMAP",".nGene.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+FeaturePlot(object = data.combined, features = c("nFeature_RNA"), min.cutoff = "q9", pt.size = 2) #umi plot
+dev.off()
+
+outfile = paste(prefix1,"_UMAP",".pctRibo.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+FeaturePlot(object = data.combined, features = c("percent.ribo"), min.cutoff = "q9", pt.size = 2) #umi plot
+dev.off()
+
+outfile = paste(prefix1,"_UMAP",".pctMito.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+FeaturePlot(object = data.combined, features = c("percent.mt"), min.cutoff = "q9", pt.size = 2) #umi plot
+dev.off()
+
+data.combined@meta.data$Dataset = factor(data.combined@meta.data$Dataset, levels = 
+                                           c("GBM.2021","Mets.2022","Werb.2022","Feldman"))
+
+
+outfile = paste(prefix1,"_UMAP.dataset.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "Dataset", label = TRUE, label.size = 8, pt.size = 0.5)
+dev.off()
+
+outfile = paste(prefix1,"_UMAP.dataset.split.png",sep="")
+png(filename = outfile,width = 1600, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "Dataset", split.by = "Dataset", label = FALSE, label.size = 8, pt.size = 0.5)
+dev.off()
+
+
+data.combined@meta.data$condition = factor(data.combined@meta.data$condition, levels = 
+                                             c("GBM.rec","GBM.pembro","met","met.pembro"))
+color_condition <- c("cyan","blue","pink","red")
+
+outfile = paste(prefix1,"_UMAP.condition.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "condition", label = FALSE, label.size = 8, pt.size = 0.5, cols = color_condition)
+dev.off()
+
+outfile = paste(prefix1,"_UMAP.condition.split.png",sep="")
+png(filename = outfile,width = 1600, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "condition", split.by = "condition", label = FALSE, label.size = 8, pt.size = 0.5, cols = color_condition)
+dev.off()
+
+outfile = paste(prefix1,"_UMAP.WerbCelltype.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "Cell_Type", label = TRUE, label.size = 8, pt.size = 1, na.value = "lightgrey", raster=FALSE)
+dev.off()
+
+outfile = paste(prefix1,"_UMAP.Sample.png",sep="")
+png(filename = outfile,width = 2000, height = 1200)
+DimPlot(object = data.combined, reduction = "umap", group.by = "ID", label = TRUE, label.size = 4, pt.size = 1, na.value = "lightgrey", raster=FALSE)
+dev.off()
+
+saveRDS(data.combined, file=paste(prefix1, "rds", sep="."))
+
+
+```
+
+
+#Clustering
+```{r}
+DefaultAssay(object = data.combined) <- "integrated"
+
+data.combined <- FindNeighbors(object = data.combined, reduction = "harmony", dims = 1:30, nn.method = "annoy", annoy.metric = "cosine", force.recalc = TRUE)
+data.combined <- FindClusters(data.combined, resolution = 0.7)
+
+#colors = c("red","orange","yellow","green","lightgreen","blue","magenta","cyan","pink","brown","black","darkblue","darkgrey","lightgrey","maroon","lightblue")
+
+outfile = paste(prefix1,"_UMAP", ".Res0.7.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "integrated_snn_res.0.7", label = TRUE, label.size = 8, pt.size = 1)#, cols = colors[1:8])
+dev.off()
+
+saveRDS(data.combined, file=paste(prefix1, "rds", sep="."))
+#data.combined = readRDS(file=paste(prefix1, ".rds", sep=""))
+
+```
+
+
+#draw umap of genes of interest ###
+```{r}
+DefaultAssay(data.combined) <- "RNA"
+
+gene = c("CD14","FCGR3A",
+         "S100A8","S100A9",
+         "FCN1","CD36",
+         "VCAN","CXCR4",
+         "CD68","CD163",
+         "HLA-DQA1","CLEC9A",
+         "IDO1","BATF3",
+         "FCER1A","CLEC10A",
+         "CD1C","LAMP3",
+         "LILRA4","P2RY12", #pDC and MAST cell marker
+         "TMEM119","CX3CR1",
+         "ADORA3","CCR7",
+         "IL1B","CCL2",
+         "CXCL8","LGALS3",
+         "ISG15","IFIT1",
+         "CH25H","ENTPD1",
+         "CXCL9","CXCL10",
+         "GPNMB","CLEC4E",
+         "MRC1","LYVE1",
+         "CD3D","MKI67")
+
+
+gene = c("CD14","FCGR3A",
+         "S100A8","S100A9",
+         "FCN1","VCAN",
+         "CXCL9","CXCL10",
+         "ISG15","IFITM1",
+         "STAT1","STAT2",
+         "HLA-DRB5","HLA-DQA1",
+         "HLA-DQB1","CD274",
+         "LILRB1","LILRB2",
+         "MRC1","LYVE1",
+         "VEGFA","IL1B",
+         "CCL3","CCL4")
+
+outfile = paste(prefix,"_UMAP.MainCellTypes2.png",sep="")
+png(filename = outfile,width = 1200, height = 2000)
+FeaturePlot(object = data.combined, features = gene, min.cutoff = "q9",  pt.size = 1, ncol=4, cols = c("lightgrey","blue"))
+dev.off()
+
+
+
+```
+
+
+#Find cluster markers
+```{r}
+DefaultAssay(data.combined) <- "RNA"
+Idents(object = data.combined) <- "integrated_snn_res.0.7"
+cluster.markers<- FindAllMarkers(object = data.combined, only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.322,test.use="MAST")
+outfile = paste(prefix1,"_ClusterDiffGene.Res0.7", ".csv",sep="")
+write.csv(cluster.markers, file=outfile)
+
+saveRDS(data.combined,file=paste(prefix1, ".rds", sep=""))
+#data.combined = readRDS(file=paste(prefix1, ".rds", sep=""))
+
+```
+
+#assign cell types ###
+```{r}
+#assign each cluster cell type
+Idents(object = data.combined) <- "integrated_snn_res.0.7"
+current.cluster.ids <- c(0:24)
+new.cluster.ids <- c("Microglia-ISG-IL10","Complement/RiboHigh","Mphage-IL1B-CCL3-CCL4", #2
+                     "Mphage-Angiogenesis","Microglia","Mphage-MRC1-LYVE1",#5
+                    "Mphage-Lysosome","Microglia-Phagocytosis","Myeloid.Cycling",#8
+                    "cDC2","Monocyte-ISG","Mphage+Tcell",#11
+                   "Microglia","MitoHigh","Microglia", #14
+                   "Mphage+Tcell","Mphage+Tumor","Mphage+Tumor", #17
+                   "Monocyte","Mphage-ISG-MRC1-LILRB2",#19
+                   "Mphage+Tumor","MitoHigh","cDC1",#22
+                   "Bcell","pDC")
+        
+
+Idents(object = data.combined) <- plyr::mapvalues(x = Idents(object = data.combined), from = current.cluster.ids, to = new.cluster.ids)
+
+data.combined@meta.data$celltype <- Idents(object = data.combined)
+data.combined@meta.data$celltype <- factor(data.combined@meta.data$celltype,
+                                           levels = c("Microglia",
+                                                      "Microglia-ISG-IL10",
+                                                      "Microglia-Phagocytosis",
+                                                      "Complement/RiboHigh",
+                                                      "Monocyte",
+                                                      "Monocyte-ISG",
+                                                      "Mphage-ISG-MRC1-LILRB2",
+                                                      "Mphage-Angiogenesis",
+                                                      "Mphage-MRC1-LYVE1",
+                                                      "Mphage-Lysosome",
+                                                      "Mphage-IL1B-CCL3-CCL4",
+                                                      "cDC2",
+                                                      "cDC1",
+                                                      "pDC",
+                                                      "Myeloid.Cycling",
+                                                      "Mphage+Tcell",
+                                                      "Mphage+Tumor",
+                                                      "Bcell",
+                                                      "MitoHigh"))
+
+#pal.bands(tol(12))
+colorsCluster = c(tol(n=12)[3:5],"#999933","#FFCDF3","#CC6677",brewer.paired(12)[7:8],"#FF1493","#C71585","#F0E68C	","#C19A6B","#CD7F32","#6E260E","#FFDAB9","darkgrey","darkgrey","grey","lightgrey")
+
+outfile = paste(prefix1,"_UMAP.Celltype.png",sep="")
+png(filename = outfile,width = 1000, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "celltype", label = TRUE, label.size = 5, pt.size = 1, repel=TRUE, cols = colorsCluster, raster=FALSE)
+dev.off()
+
+# outfile = paste(prefix1,"_UMAP.Celltype.noLabel.png",sep="")
+# png(filename = outfile,width = 1000, height = 800)
+outfile = paste(prefix1,"_UMAP.Celltype.noLabel.tiff",sep="")
+tiff(file=outfile, width=4000, height=2800, res=600)
+DimPlot(object = data.combined, reduction = "umap", group.by = "celltype", label = FALSE, label.size = 8, pt.size = 0.2, cols = alpha(colorsCluster,1))
+dev.off()
+
+saveRDS(data.combined,file=paste(prefix1, ".rds", sep=""))
+#data.combined = readRDS(file=paste(prefix1, ".rds", sep=""))
+```
+
+
+#Find celltype markers
+```{r}
+DefaultAssay(data.combined) <- "RNA"
+Idents(object = data.combined) <- "celltype"
+
+cluster.markers<- FindAllMarkers(object = data.combined, only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.322,test.use="MAST")
+
+cluster.markers$DeltaPerLogFC = cluster.markers$avg_log2FC*(cluster.markers$pct.1-cluster.markers$pct.2)
+  
+outfile = paste(prefix1,"_CelltypeDiffGene", ".csv",sep="")
+write.csv(cluster.markers, file=outfile)
+
+```
+
+
+
+#draw boxplots of genes of interest ###
+```{r}
+library(ggplot2)
+library(reshape)
+library(dplyr)
+library(ggpubr)
+library(scales)
+
+Celltypes = c("Microglia",
+              "Microglia-ISG-IL10",
+              "Microglia-Phagocytosis",
+              "Complement/RiboHigh",
+              "Monocyte",
+              "Monocyte-ISG",
+              "Mphage-ISG-MRC1-LILRB2",
+              "Mphage-Angiogenesis",
+              "Mphage-MRC1-LYVE1",
+              "Mphage-Lysosome",
+              "Mphage-IL1B-CCL3-CCL4",
+              "cDC2",
+              "cDC1",
+              "pDC",
+              "Myeloid.Cycling",
+              "Mphage+Tcell",
+              "Mphage+Tumor",
+              "Bcell",
+              "MitoHigh")
+
+gene = c("CD14","FCGR3A","CD163","CD68","MKI67")
+gene = c("CX3CR1","TMEM119","P2RY12")
+gene = c("LRP1","DAB2")
+gene = c("CXCL9","CXCL10","ISG15","STAT1","STAT2") 
+gene = c("C1QA","C1QB")
+gene = c("FCN1","S100A8","S100A9")
+gene = c("CLEC9A","BATF3","CLEC10A","FCER1A","CLEC4C","IL3RA")
+gene = c("HLA-A","HLA-B","HLA-DRA","HLA-DQA1")
+gene = c("CD274","LILRB2","JAML")
+gene = c("IL1B","CXCL8","NLRP3","TNF","IL1A","NFKB1")
+gene = c("CTSD","CSTB","LYZ")
+gene = c("VCAN","VEGFA","LYVE1","MRC1")
+
+
+SubsetData = subset(data.combined, subset = (celltype %in% Celltypes))
+
+data = SubsetData@assays$RNA@data
+expr_gene = data[gene,]
+expr_gene = as.data.frame(t(expr_gene))
+
+expr_gene$condition = SubsetData@meta.data$celltype
+expr_gene$condition = factor(SubsetData@meta.data$celltype,levels=Celltypes)
+
+colnames(expr_gene) = c(gene,"condition")
+
+colors = colorsCluster
+#colors = hue_pal()(21)
+
+ncol = length(gene)
+nrow1 = length(gene)/ncol
+height1 = nrow1*180
+width1 = length(levels(expr_gene$condition))*20*ncol
+
+outfile = paste(prefix,"GeneBoxplot.ByCelltype.MHC.png",sep="_")
+png(filename = outfile,width = width1, height = height1)
+panels=list()
+l=length(colnames(expr_gene))
+i=1
+for(i in 1:length(gene)){
+#for(i in 1:2){
+  gene2 = colnames(expr_gene)[i]
+  data2 = expr_gene[,c(i,l)]
+  colnames(data2)=c("normExpr","condition")
+  
+  #geom_boxplot(outlier.colour="black", outlier.shape=16,
+             #outlier.size=2, notch=FALSE)
+ 
+  y = ggplot(data=data2, aes(x=condition,y=normExpr,fill=condition)) +
+       #geom_violin(trim = FALSE)+
+       geom_boxplot(outlier.colour="black",notch=TRUE)+
+        scale_fill_manual(values=colors)+
+      theme(
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size=28),
+        axis.ticks.x = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "none",
+        plot.title=element_text(face = "italic",size=32))+
+      ggtitle(gene2)
+    
+      panels[[i]]=y
+  
+}
+ggarrange(plotlist=panels,ncol=ncol,nrow=nrow1)
+dev.off()
+
+
+Idents(object = SubsetData) <- "celltype"
+AverageExpr <- AverageExpression(SubsetData,
+                                 assays = "RNA",
+                                 features = gene,
+                                 group.by= "ident",
+                                 return.seurat = TRUE)
+
+outfile = paste(prefix,"_AverageExprByCelltype.txt",sep="")
+write.table(AverageExpr@assays$RNA@scale.data,file=outfile,sep="\t")
+
+genelist = c("CD163","MRC1","LYVE1","VEGFA")
+
+outfile = paste(prefix,"Dotplot.SelectedGene.png",sep=".")
+png(outfile, height = 500, width = 800)
+DotPlot(SubsetData, features = genelist)
+dev.off()
+
+
+```
+
+
+#calculate each cell type's fraction in each sample ###
+```{r}
+## Enumerate per sample
+totalNum=c(table(data.combined@meta.data$ID)[[1]])
+Group = names(table(data.combined@meta.data$ID))
+table_sub = data.frame()
+table_sub = subset(data.combined@meta.data, ID==Group[1])
+percentages=as.data.frame((table(table_sub$celltype)))$Freq
+table1 = percentages
+
+m1 = data.combined@meta.data
+
+for(i in 2:length(Group)){
+  id = Group[i]
+  n_total = table(data.combined@meta.data$ID)[[i]]
+  totalNum=c(totalNum,n_total)
+  
+  table_sub = data.frame()
+  table_sub = subset(data.combined@meta.data, ID==id)
+  
+  percentages=as.data.frame((table(table_sub$celltype)))$Freq
+  table1=as.data.frame(rbind(table1,percentages))
+}
+
+table2 = as.data.frame(cbind(table1,Total=totalNum))
+rownames(table2)=Group
+colnames(table2)=c(levels(data.combined@meta.data$celltype),"Total")
+table2$Myeloid = table2$Total-table2$'Bcell'-table2$'MitoHigh'-table2$'Mphage+Tcell'-table2$'Mphage+Tumor'
+
+sampleMap = unique(data.combined@meta.data[,c("ID","condition","CancerType","MainCancerType")])
+rownames(sampleMap) = sampleMap$ID
+sampleMap = sampleMap[Group,]
+table2$condition = sampleMap$condition
+table2$CancerType = sampleMap$CancerType
+table2$MainCancerType = sampleMap$MainCancerType
+
+outfile = paste(prefix,"_CelltypeByID.txt",sep="")
+write.table(table2,file=outfile,sep="\t")
+
+```
+
+
+## Get DEGs for all/subset of myeloid cells
+```{r}
+DefaultAssay(data.combined) <- "RNA"
+
+Group = names(table(data.combined@meta.data$ID))
+sampleMap = unique(data.combined@meta.data[,c("ID","condition","CancerType")])
+rownames(sampleMap) = sampleMap$ID
+sampleMap = sampleMap[Group,]
+
+Celltypes = c("Microglia",
+              "Microglia-ISG-IL10",
+              "Microglia-Phagocytosis",
+              "Monocyte",
+              "Monocyte-ISG",
+              "Mphage-ISG-MRC1-LILRB2",
+              "Mphage-Angiogenesis",
+              "Mphage-MRC1-LYVE1",
+              "Mphage-Lysosome",
+              "Mphage-IL1B-CCL3-CCL4",
+              "cDC2",
+              "cDC1",
+              "pDC")#,
+              #"Complement/RiboHigh",
+              #"Myeloid.Cycling")#,
+              #"Mphage+Tcell",
+              #"Mphage+Tumor",
+              #"Bcell",
+              #"MitoHigh")
+
+SubsetData = subset(data.combined, subset = (celltype %in% Celltypes))
+
+#sample the same number of cells from every sample to avoid patient-specific effects
+IDlist = c()
+nCell = 50
+set.seed(123)
+for(i in 1:length(Group)){
+  ids_sub = c()
+  
+  subdata = subset(SubsetData,ID==Group[i])
+  ids = colnames(subdata)
+  
+  if(length(ids) < nCell){
+     ids_sub = ids
+  }else{
+     ids_sub = sample(ids, nCell)
+  }
+  IDlist = c(IDlist,ids_sub)
+}
+
+
+## get DEG in met vs GBM samples ####
+conditions = c("GBM.rec","met")
+TreatmentSubset = subset(data.combined[,IDlist],condition %in% conditions)
+Idents(object = TreatmentSubset) <- "condition"
+
+markers <- FindAllMarkers(TreatmentSubset,min.pct = 0.25, logfc.threshold = 0.322,only.pos = TRUE)
+markers <- as.data.frame(markers)
+markers$diff = markers$pct.1 - markers$pct.2
+markers$DeltaPerMultiLog2FC = markers$diff*markers$avg_log2FC
+
+outfile = paste(prefix,"DEG","BrMvsGBM.NoPembro","NoMicrogliaNoDoubletNoB.tsv",sep=".")
+write.table(markers, file=outfile, sep="\t" )
+
+
+## get DEG in BrM.ICB vs BrM samples ####
+conditions = c("met","met.pembro")
+TreatmentSubset = subset(data.combined[,IDlist],condition %in% conditions)
+
+Idents(object = TreatmentSubset) <- "condition"
+markers <- FindAllMarkers(TreatmentSubset,min.pct = 0.25, logfc.threshold = 0.322,only.pos = TRUE)
+markers <- as.data.frame(markers)
+markers$diff = markers$pct.1 - markers$pct.2
+markers$DeltaPerMultiLog2FC = markers$diff*markers$avg_log2FC
+
+outfile = paste(prefix,"DEG","MetsICBvsMets","NoDoubletNoBNoPlasma.tsv",sep=".")
+write.table(markers, file=outfile, sep="\t" )
+
+
+# Get the delta of the delta (GBM.pembro vs GBM.rec, Mets.pembro vs Mets)
+conditions = c("GBM.rec","GBM.pembro")
+TreatmentSubset = subset(data.combined[,IDlist],condition %in% conditions)
+Idents(object = TreatmentSubset) <- "condition"
+markers1 <- FindAllMarkers(TreatmentSubset,min.pct = 0, logfc.threshold = 0,only.pos = FALSE)
+
+conditions = c("met","met.pembro")
+TreatmentSubset = subset(data.combined[,IDlist],condition %in% conditions)
+Idents(object = TreatmentSubset) <- "condition"
+markers2 <- FindAllMarkers(TreatmentSubset,min.pct = 0, logfc.threshold = 0,only.pos = FALSE)
+
+markers1.sub = subset(markers1, cluster == "GBM.pembro")
+markers2.sub = subset(markers2, cluster == "met.pembro")
+
+genes = union(unique(markers1.sub$gene),unique(markers2.sub$gene))
+
+DeltaLogFC = data.frame(matrix(ncol = 4, nrow = 0))
+colnames(DeltaLogFC) = c("Gene","Delta","GBM.pembro.logFC","Mets.Pembro.logFC")
+
+for(i in 1:length(genes)){
+  gene = genes[i]
+  list1 = markers1.sub[markers1.sub$gene==gene,]
+  list2 = markers2.sub[markers2.sub$gene==gene,]
+  
+  if(nrow(list1)==1){
+    logfc1 = list1$avg_log2FC
+  }else{
+    logfc1 = 0
+  }
+
+  if(nrow(list2)==1){
+    logfc2 = list2$avg_log2FC
+  }else{
+    logfc2 = 0
+  }  
+  
+  delta = logfc2-logfc1
+  
+  DeltaLogFC[i,1] = gene
+  DeltaLogFC[i,2] = delta
+  DeltaLogFC[i,3] = logfc1
+  DeltaLogFC[i,4] = logfc2
+
+}
+rownames(DeltaLogFC) = DeltaLogFC$Gene
+
+outfile = paste(prefix,"MetsPembrovsGBMpembro","NoDoubletNoBNoPlasma","DeltaLogFC","tsv",sep=".")
+write.table(DeltaLogFC, file=outfile, sep="\t")
+
+
+```
+
+## get sample-level averaged gene expression boxplot/violin plot
+```{r}
+SubsetData = subset(data.combined, subset = (celltype %in% Celltypes))
+
+Group = names(table(SubsetData@meta.data$ID))
+sampleMap = unique(SubsetData@meta.data[,c("ID","condition","CancerType","MainCancerType","MainCancerType2")])
+rownames(sampleMap) = sampleMap$ID
+sampleMap = sampleMap[Group,]
+
+#gene sample-wise gene expression level
+Idents(SubsetData) <- "ID"
+expr_avg <- AverageExpression(SubsetData,
+                              assays = "RNA",
+                              group.by = "ident",
+                              #add.ident = "condition",
+                              slot = "data")
+expr_avg = as.data.frame(expr_avg$RNA)
+expr_avg = expr_avg[,Group]
+
+Genes = c("LYZ","S100A8","S100A9","G0S2","JAML","MRC1","CXCR4","NLRP3","CH25H",
+          "CXCL2","CXCL3","CXCL8","COX7B","COX7C","NDUFB1","CCL3","CD44",
+          "ISG15","ISG20","IFI6","IFI30","IFI27L2","IFIT1","STAT1","STAT2","TAP1",
+          "IFI27","IFIT3","IFITM1","MX1","MX2","OAS2","OASL","GBP5","GBP4",
+          "HLA-A","HLA-B","HLA-C","HLA-DRB5","HLA-DQA2")
+
+expr_gene = expr_avg[unique(Genes),sampleMap$ID]
+expr_gene = as.data.frame(t(expr_gene))
+
+expr_gene$CancerType = sampleMap$CancerType
+expr_gene$condition = sampleMap$condition
+expr_gene$MainCancerType = sampleMap$MainCancerType
+expr_gene$MainCancerType2 = sampleMap$MainCancerType2
+
+colnames(expr_gene) = c(unique(Genes),"type","condition","MainType","MainType2")
+
+outfile = paste(prefix,"_GeneExprByID.txt",sep="")
+write.table(expr_gene,file=outfile,sep="\t")
+
+
+```
+
+## plot per-celltype-based gene expression boxplot/violin plot
+```{r}
+Genes = c("LYZ","S100A8","S100A9","JAML","CXCL2",
+          #"CXCL3","CXCL8","COX7B","COX7C","NDUFB1",
+          "ISG15","ISG20","IFI27L2","HLA-B","HLA-C")
+
+Genes = c("STAT1","OASL","IFITM1","IFITM2","ISG15","ISG20","IFI27","IFI30","IFI6","GBP5","TAP1","HLA-A","HLA-B","HLA-DRA","HLA-DRB5","HLA-DQA2","HLA-DQB2","CXCR4","NLRP3","CH25H")
+
+Genes = c("CXCR4","CXCL12")
+
+Celltypes = c("Microglia",
+              "Microglia-ISG-IL10",
+              "Microglia-Phagocytosis",
+              "Complement/RiboHigh",
+              "Monocyte",
+              "Monocyte-ISG",
+              "Mphage-ISG-MRC1-LILRB2",
+              "Mphage-Angiogenesis",
+              "Mphage-MRC1-LYVE1",
+              "Mphage-Lysosome",
+              "Mphage-IL1B-CCL3-CCL4",
+              "cDC2",
+              "cDC1",
+              "pDC",
+              "Myeloid.Cycling")#,
+              #"Mphage+Tcell",
+              #"Mphage+Tumor",
+              #"Bcell",
+              #"MitoHigh")
+
+condition_sub = c("met","met.pembro")
+#condition_sub = c("GBM.rec","GBM.pembro","met","met.pembro")
+
+#cancertype_sub = c("Melanoma")
+cancertype_sub = c("Melanoma","Lung","Gastric","Colorectal","RCC","Ovarian","Endometrial","Uterine","Recurrent","Breast","Adenoid.cystic","Unknown")
+
+
+SubsetData = subset(data.combined, celltype %in% Celltypes & condition %in% condition_sub & CancerType %in% cancertype_sub)
+
+Group = names(table(SubsetData@meta.data$ID))
+
+#sample the same number of cells from every sample to avoid patient-specific effects
+IDlist = c()
+nCell = 50
+set.seed(123)
+for(i in 1:length(Group)){
+  ids_sub = c()
+  
+  subdata = subset(SubsetData,ID==Group[i])
+  ids = colnames(subdata)
+  
+  if(length(ids) < nCell){
+     ids_sub = ids
+  }else{
+     ids_sub = sample(ids, nCell)
+  }
+  IDlist = c(IDlist,ids_sub)
+}
+
+TreatmentSubset = data.combined[,IDlist]
+
+DefaultAssay(TreatmentSubset)<-"RNA"
+
+expr_gene = TreatmentSubset@assays$RNA@data[Genes,]
+expr_gene = as.data.frame(t(expr_gene))
+
+expr_gene$type = TreatmentSubset@meta.data$celltype
+expr_gene$condition = TreatmentSubset@meta.data$condition
+expr_gene$MainType = TreatmentSubset@meta.data$MainCancerType
+
+colnames(expr_gene) = c(Genes,"type","condition","MainType")
+
+expr_gene <- droplevels(expr_gene)
+expr_gene$type = factor(expr_gene$type, levels = Celltypes)
+
+colors = c("pink","red")
+#colors = c("cyan","blue","pink","red")
+
+ncol = 1  
+nrow1 = length(Genes)/ncol
+width1 = length(Celltypes)*50*ncol
+height1 = nrow1*180
+
+outfile = paste(prefix,"DEG.Boxplot","MetsPembrovsGBMpembro","NoDoubletNoBNoPlasma","DeltaLogFC","CXCL12","png", sep=".") #gene expr boxplot in each cell type
+png(filename = outfile,width = width1, height = height1)
+panels=list()
+l=length(colnames(expr_gene))
+
+for(j in 1:length(Genes)){
+#for(i in 1:2){
+  gene2 = colnames(expr_gene)[j]
+  data2 = expr_gene[,c(j,l-2,l-1,l)]
+  colnames(data2)=c("normExpr","type","condition","MainType")
+ 
+  y = ggplot(data=data2, aes(x=type,y=normExpr,fill=condition)) +
+       #geom_violin(trim = FALSE)+
+      geom_boxplot(outlier.colour=alpha("grey",alpha = 0),notch=TRUE)+
+      geom_point(aes(fill = condition), size = 0.5, shape = 21, position = position_jitterdodge())+
+      scale_fill_manual(values=rep(colors,length(levels(expr_gene$type))))+
+      theme(
+        #axis.text.x = element_blank(),
+        axis.text.x = element_text(size=8),
+        axis.text.y = element_text(size=28),
+        axis.ticks.x = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "none",
+        plot.title=element_text(face = "italic", size=36))+
+      ggtitle(gene2)
+    
+      panels[[j]]=y
+  
+}
+ggarrange(plotlist=panels,ncol=ncol,nrow=nrow1)
+dev.off()
+
+
+
+### pairwise wilcox test ###########################
+for(j in 1:length(Genes)){
+  gene2 = colnames(expr_gene)[j]
+  print(gene2)
+  
+  for(i in 1:length(Celltypes)){
+    data2 = expr_gene[,c(j,l-2,l-1,l)]
+    colnames(data2)=c("normExpr","type","condition","MainType")
+    data2.sub = data2[data2$type %in% c(Celltypes[i]) & data2$condition %in% c("met","met.pembro"),]
+    data2.sub <- droplevels(data2.sub)
+    t <- wilcox.test(normExpr ~ condition, data = data2.sub)
+    
+    print(Celltypes[i])
+    print(t$p.value)
+  }
+}
+
+
+
+
+```
+
+
+

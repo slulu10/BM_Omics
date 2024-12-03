@@ -1,0 +1,168 @@
+
+#https://bioconductor.org/packages/release/bioc/vignettes/destiny/inst/doc/Diffusion-Maps.html
+```{r}
+library(Seurat)
+library(Matrix)
+library(dplyr)
+library(cowplot)
+require(data.table)
+library(harmony)
+library("ggplot2")
+library(ggpubr)
+library(destiny)
+library(RColorBrewer)
+
+
+options(bitmapType='cairo')
+prefix = "Seurat.MetsGBM.CombinedAnalysis.Apr2022.Lymphoid.CD8"
+
+
+infile ="Seurat.MetsGBM.CombinedAnalysis.Apr2022.Lymphoid.MinD0.1.sprd5.NN20.seed122.ep1000.rds"
+
+```
+
+#load data and subset data
+```{r}
+data.combined = readRDS(file=infile)
+
+Celltypes = c("CD8-IL7R-CD69-Tm",
+              "CD8-ITGA1-ITGAL-Trm",
+              "CD8-TCF7-CD226-Tprog.exh",
+              "CD8-ISG High",
+              "CD8-GZMK-CCL4-CCL5-Teff",
+              "CD8-GZMH-GZMA-CD52-Teff",
+              "CD8-VCAM1-IFNG-Tex",
+              "CD8-CXCL13-LAG3-Tex")
+
+conditions = c("GBM.rec","GBM.pembro","met","met.pembro")
+
+data.sub = subset(data.combined, subset = (celltype %in% Celltypes))
+
+data.sub = subset(data.sub,condition %in% conditions)
+
+rownames(data.sub@meta.data) = colnames(data.sub)
+
+data.sub@meta.data$celltype <- factor(data.sub@meta.data$celltype,
+                                      levels = c("CD8-IL7R-CD69-Tm",
+                                        "CD8-ITGA1-ITGAL-Trm",
+                                        "CD8-TCF7-CD226-Tprog.exh",
+                                        "CD8-ISG High",
+                                        "CD8-GZMK-CCL4-CCL5-Teff",
+                                        "CD8-GZMH-GZMA-CD52-Teff",
+                                        "CD8-VCAM1-IFNG-Tex",
+                                        "CD8-CXCL13-LAG3-Tex"))
+
+cols = c(brewer.pal(8, name="Paired"))
+cols[6]<-"maroon"
+
+outfile = paste(prefix,"_UMAP.Celltype.png",sep="")
+png(filename = outfile,width = 1000, height = 800)
+DimPlot(object = data.sub, reduction = "umap", group.by = "celltype", label = TRUE, label.size = 5, pt.size = 1, repel=TRUE, cols = cols[1,8])
+dev.off()
+
+outfile = paste(prefix,"_UMAP.Celltype.noLabel.png",sep="")
+png(filename = outfile,width = 1000, height = 800)
+DimPlot(object = data.sub, reduction = "umap", group.by = "celltype", label = FALSE, label.size = 8, pt.size = 1, cols = cols)
+dev.off()
+
+```
+
+
+
+#computed the diffusion
+```{r}
+pca_matrix = data.sub@reductions$pca@cell.embeddings[,c(1:10)] 
+
+dm <- DiffusionMap(pca_matrix)
+
+dpt <- DPT(dm)
+
+tmp <- data.frame(DC1 = dm$DC1,
+                  DC2 = dm$DC2,
+                  DC3 = dm$DC3)
+tmp = as.matrix(tmp)
+
+data.sub[["dm"]] <- CreateDimReducObject(embeddings = tmp, key="DC_", assay=DefaultAssay(data.sub))
+
+data.sub$dpt = as.numeric(dpt$dpt)
+
+```
+
+#output the dm embeddings and cell type for 2D/3D visualization
+```{r}
+
+
+tmp <- data.frame(DC1 = dm$DC1,
+                  DC2 = dm$DC2,
+                  DC3 = dm$DC3,
+                  ID = data.sub$ID,
+                  celltype = data.sub$celltype,
+                  condition = data.sub$condition)
+
+gene = c("CD3D","CD8A","CD8B","CD4",
+         "IL7R","CCR7","SELL","TCF7",
+         "CD40LG","CD28","CD226","TNFRSF9",
+         "CD69","ITGA1","ITGAL","ITGAE","CXCR6",
+         "ISG15","IFI6","STAT1","CD52",
+         "GZMB","GZMA","GZMK","GZMH",
+         "CCL4","CCL5","VCAM1","CXCR4",
+         "IFNG","CXCL13","PDCD1","CTLA4","BACH2","BATF","SLAMF6",
+         "ENTPD1","NR4A2","TOX","TIGIT",
+         "LAG3","HAVCR2","FOXP3","IL2RA",
+         "GNLY","PRF1","KLRF1","KLRB1","FOS","JUN",
+         "XCL1","XCL2","MKI67","MALAT1",
+         "KRT19","SOX4","CD14","TPSB2")
+
+
+expr_gene = t(data.sub@assays$RNA@data[gene,])
+
+tmp <- cbind(tmp, expr_gene)
+
+outfile = paste(prefix,"DiffusionMapEmbedding","txt",sep=".")
+write.table(tmp,file=outfile,sep="\t")
+#dm <- read.delim(outfile, sep="\t")
+
+saveRDS(data.sub, file=paste(prefix,"DM","rds", sep="."))
+#data.sub = readRDS(file=paste(prefix,"DM","rds", sep="."))
+
+
+```
+
+
+#Convert data from Seurat to Python/anndata for RNA velocity analysis
+```{r}
+
+#change barcode's suffix to sample name
+t<-sapply(strsplit(colnames(data.sub),'-'),'[',1)
+data.sub$barcode <- paste(t,data.sub$ID,sep="-")
+
+# save metadata table:
+rownames(data.sub@meta.data) = data.sub$barcode
+data.sub$UMAP_1 <- data.sub@reductions$umap@cell.embeddings[,1]
+data.sub$UMAP_2 <- data.sub@reductions$umap@cell.embeddings[,2]
+write.csv(data.sub@meta.data, file=paste(prefix,'metadata.csv',sep="."), quote=F, row.names=F)
+
+# write expression counts matrix
+counts_matrix <- GetAssayData(data.sub, assay='RNA', slot='counts')
+colnames(counts_matrix) <- as.character(data.sub$barcode)
+writeMM(counts_matrix, file=paste(prefix, 'counts.mtx', sep="."))
+
+# write dimesnionality reduction matrix, in this example case diffusion map embeddings
+rownames(data.sub@reductions$dm@cell.embeddings)<-as.character(data.sub$barcode)
+write.csv(data.sub@reductions$dm@cell.embeddings, file=paste(prefix,'DM.csv',sep="."), quote=F, row.names=F)
+
+rownames(data.sub@reductions$pca@cell.embeddings)<-as.character(data.sub$barcode)
+write.csv(data.sub@reductions$pca@cell.embeddings, file=paste(prefix,'pca.csv',sep="."), quote=F, row.names=F)
+
+
+# write gene names
+write.table(
+  data.frame('gene'=rownames(counts_matrix)),file=paste(prefix,'gene_names.csv',sep="."),
+  quote=F,row.names=F,col.names=F
+)
+
+gc()
+
+```
+
+
