@@ -1,0 +1,426 @@
+```{r}
+library(Seurat)
+library(Matrix)
+library(dplyr)
+library(cowplot)
+require(data.table)
+library(harmony)
+library("ggplot2")
+
+options(bitmapType='cairo') 
+prefix = "Seurat.MetsGBM.CombinedAnalysis.Apr2022"
+
+infile1 = "scRNAseq/GBM2021.rec.TIL.Normalized.VarGene.rds"
+infile2 = "scRNAseq/Mets2022.TIL.Normalized.VarGene.rds"
+infile3 = "scRNAseq/WerbCell2022.ImmuneCombined.Apr2022.Normalized.VarGene.rds"
+infile4 = "scRNAseq/Feldman2018.Combined.Apr2022.BrainMets.Normalized.VarGene.rds"
+
+
+```
+
+#read in rds files and create seurat object lists for integration
+```{r}
+data.gbm.own = readRDS(file=infile1)
+data.mets.own = readRDS(file=infile2)
+data.mets.werb = readRDS(file=infile3)
+data.mets.Feldman = readRDS(file=infile4)
+
+data.gbm.own$Dataset <- "GBM.2021"
+data.mets.own$Dataset <- "Mets.2022"
+data.mets.werb$Dataset <- "Werb.2022"
+data.mets.Feldman$Dataset <- "Feldman"
+
+
+#create multiple seurat objects depending on their tumor type and treatment group
+#this way the most variable genes we selected during integration should be evenly distributed across tumor types and treatment groups
+ob.list<-SplitObject(data.gbm.own,split.by= "condition")
+
+ob.list.gbm.rec <- SplitObject(ob.list$GBM.rec,split.by= "ID")
+gbm.merge <- merge(
+  x = ob.list.gbm.rec[[1]],
+  y = unlist(ob.list.gbm.rec[2:length(ob.list.gbm.rec)])
+)
+gbm.merge@assays$RNA@var.features <- SelectIntegrationFeatures(ob.list.gbm.rec)
+
+
+ob.list.gbm.pembro <- SplitObject(ob.list$GBM.pembro,split.by= "ID")
+gbm.pembro.merge <- merge(
+  x = ob.list.gbm.pembro[[1]],
+  y = unlist(ob.list.gbm.pembro[2:length(ob.list.gbm.pembro)])
+)
+gbm.pembro.merge@assays$RNA@var.features <- SelectIntegrationFeatures(ob.list.gbm.pembro)
+
+
+
+ob.list<-SplitObject(data.mets.own,split.by= "condition")
+ob.list.met1 <- SplitObject(ob.list$met,split.by= "ID")
+ob.list.met.pembro1 <- SplitObject(ob.list$met.pembro,split.by= "ID")
+
+
+ob.list.met2 <- SplitObject(data.mets.werb,split.by= "ID")
+
+ob.list.met <- c(unlist(ob.list.met1),unlist(ob.list.met2))
+met.merge <- merge(
+  x = ob.list.met[[1]],
+  y = unlist(ob.list.met[2:length(ob.list.met)])
+)
+met.merge@assays$RNA@var.features <- SelectIntegrationFeatures(ob.list.met)
+
+
+ob.list.met.pembro <- c(unlist(ob.list.met.pembro1),data.mets.Feldman)
+met.pembro.merge <- merge(
+  x = ob.list.met.pembro[[1]],
+  y = unlist(ob.list.met.pembro[2:length(ob.list.met.pembro)])
+)
+met.pembro.merge@assays$RNA@var.features <- SelectIntegrationFeatures(ob.list.met.pembro)
+
+
+ob.list = list(gbm.merge, gbm.pembro.merge, met.merge, met.pembro.merge)
+
+rm(data.gbm.own)
+rm(data.mets.own)
+rm(data.mets.Feldman)
+rm(data.mets.werb)
+rm(ob.list.met.pembro1)
+rm(ob.list.met.pembro)
+rm(ob.list.met)
+rm(ob.list.met1)
+rm(ob.list.met2)
+rm(ob.list.gbm.rec)
+rm(ob.list.gbm.pembro)
+rm(gbm.merge)
+rm(gbm.pembro.merge)
+rm(met.merge)
+rm(met.pembro.merge)
+
+gc()
+
+```
+
+#Run integration, scaling and PCA
+```{r}
+#ob.list = c(ob.list.own, ob.list.public)
+
+k.filterMax <- min(200, min(sapply(ob.list, ncol)))
+anchors <- FindIntegrationAnchors(object.list = ob.list, k.filter = k.filterMax, anchor.features = 2000)
+data.combined <- IntegrateData(anchorset = anchors, k.weight = k.filterMax)
+
+saveRDS(anchors, file=paste(prefix, "anchors", "rds", sep="."))
+rm(anchors)
+
+DefaultAssay(object = data.combined) <- "integrated"
+
+data.combined <- ScaleData(object = data.combined, verbose = TRUE, vars.to.regress = c("percent.mt","percent.ribo","nFeature_RNA","nCount_RNA","S.Score","G2M.Score"))
+
+gc()
+
+data.combined <- RunPCA(object = data.combined, npcs = 30, verbose = TRUE)
+
+
+saveRDS(data.combined, file=paste(prefix, "rds", sep="."))
+
+gc()
+```
+
+#Run harmony
+```{r}
+
+data.combined <- RunHarmony(data.combined, group.by.vars="Dataset",assay.use = "integrated", plot_convergence = TRUE)
+harmony_embeddings <- Embeddings(data.combined, 'harmony')
+
+gc()
+```
+
+
+#Run UMAP for cluster visualization
+```{r}
+minDist = 0.1
+spread1 = 5
+NN = 20
+seedUse = 122
+epoch = 1000
+
+prefix1 = paste(prefix,".MinD",minDist,".sprd",spread1,".NN",NN,".seed",seedUse,".ep",epoch,sep="")
+
+data.combined <- RunUMAP(object = data.combined, reduction = "harmony", dims = 1:30,min.dist = minDist, spread=spread1, n.neighbors=NN, seed.use = seedUse, n.epochs=epoch)
+
+outfile = paste(prefix1,"_UMAP", ".nUMI.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+FeaturePlot(object = data.combined, features = c("nCount_RNA"), min.cutoff = "q9", pt.size = 2) #umi plot
+dev.off()
+
+outfile = paste(prefix1,"_UMAP",".nGene.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+FeaturePlot(object = data.combined, features = c("nFeature_RNA"), min.cutoff = "q9", pt.size = 2) #umi plot
+dev.off()
+
+outfile = paste(prefix1,"_UMAP",".pctRibo.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+FeaturePlot(object = data.combined, features = c("percent.ribo"), min.cutoff = "q9", pt.size = 2) #umi plot
+dev.off()
+
+outfile = paste(prefix1,"_UMAP",".pctMito.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+FeaturePlot(object = data.combined, features = c("percent.mt"), min.cutoff = "q9", pt.size = 2) #umi plot
+dev.off()
+
+data.combined@meta.data$Dataset = factor(data.combined@meta.data$Dataset, levels = 
+                                          c("GBM.2021","Mets.2022","Werb.2022","Feldman"))
+
+
+outfile = paste(prefix1,"_UMAP.dataset.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "Dataset", label = TRUE, label.size = 8, pt.size = 0.5)
+dev.off()
+
+outfile = paste(prefix1,"_UMAP.dataset.split.png",sep="")
+png(filename = outfile,width = 1600, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "Dataset", split.by = "Dataset", label = FALSE, label.size = 8, pt.size = 0.5)
+dev.off()
+
+
+data.combined@meta.data$condition = factor(data.combined@meta.data$condition, levels = 
+                                          c("GBM.rec","GBM.pembro","met","met.pembro"))
+color_condition <- c("cyan","blue","pink","red")
+
+outfile = paste(prefix1,"_UMAP.condition.split.png",sep="")
+png(filename = outfile,width = 1600, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "condition", split.by = "condition", label = TRUE, label.size = 8, pt.size = 0.5, cols = color_condition)
+dev.off()
+
+outfile = paste(prefix1,"_UMAP.WerbCelltype.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "Cell_Type", label = TRUE, label.size = 8, pt.size = 1, na.value = "lightgrey", raster=FALSE)
+dev.off()
+
+saveRDS(data.combined, file=paste(prefix1, "rds", sep="."))
+
+
+```
+
+
+#Clustering
+```{r}
+DefaultAssay(object = data.combined) <- "integrated"
+
+data.combined <- FindNeighbors(object = data.combined, reduction = "harmony", dims = 1:30, nn.method = "annoy", annoy.metric = "cosine", force.recalc = TRUE)
+data.combined <- FindClusters(data.combined, resolution = 0.7)
+
+#colors = c("red","orange","yellow","green","lightgreen","blue","magenta","cyan","pink","brown","black","darkblue","darkgrey","lightgrey","maroon","lightblue")
+
+outfile = paste(prefix1,"_UMAP", ".Res0.7.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+DimPlot(object = data.combined, reduction = "umap", group.by = "integrated_snn_res.0.5", label = TRUE, label.size = 8, pt.size = 1)#, cols = colors[1:8])
+dev.off()
+
+saveRDS(data.combined, file=paste(prefix1, "rds", sep="."))
+#data.combined = readRDS(file=paste(prefix1, ".rds", sep=""))
+
+```
+
+
+#Find cluster markers
+```{r}
+DefaultAssay(data.combined) <- "RNA"
+Idents(object = data.combined) <- "integrated_snn_res.0.3"
+cluster.markers<- FindAllMarkers(object = data.combined, only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.322,test.use="MAST")
+outfile = paste(prefix1,"_ClusterDiffGene.Res0.3", ".csv",sep="")
+write.csv(cluster.markers, file=outfile)
+
+saveRDS(data.combined,file=paste(prefix1, ".rds", sep=""))
+#data.combined = readRDS(file=paste(prefix1, ".rds", sep=""))
+
+```
+
+#Find cluster markers
+```{r}
+
+DefaultAssay(data.combined) <- "RNA"
+
+outfile = paste(prefix,"_UMAP.", "MainCellTypes.png",sep="")
+png(filename = outfile,width = 2000, height = 2000)
+FeaturePlot(object = data.combined, features = c("EPCAM","PECAM1","PDGFRB","GFAP","OLIG2","PTPRC","CD3D","CD8B","CD4","CD14","FCGR3A","S100A9","C1QA","HLA-DRB1","MRC1","CD163","LYVE1","CD79A","TMEM119","P2RY12","CX3CR1","MLANA","PMEL","EGFR","MKI67"), min.cutoff = "q9",  pt.size = 1, ncol=5, reduction = "umap", cols = c("lightgrey","red"))
+dev.off()
+
+outfile = paste(prefix,"_UMAP.MainCellTypes2.png",sep="")
+png(filename = outfile,width = 1200, height = 1500)
+FeaturePlot(object = data.combined, features = c("CD3D","CD14","HLA-DRA","PTPRC","S100A8","APOE","CLEC10A","SOX2","GFAP","P2RY12","OLIG1","PTPRZ1","SOX4","CD24","PMEL","MLANA","EPCAM","MKI67"), min.cutoff = "q9",  pt.size = 1, ncol=4, cols = c("lightgrey","red"))
+dev.off()
+
+outfile = paste(prefix,"_UMAP.MainCellTypes3.png",sep="")
+png(filename = outfile,width = 1200, height = 1500)
+FeaturePlot(object = data.combined, features = c("PTPRC","CD3D","CD8B","CD4","CD14","CD79A","HLA-DRA","P2RY12","GFAP","OLIG1","PTPRZ1","PMEL","MLANA","CLDN5","PECAM1","RGS5","ACTA2","KRT19","EPCAM","MKI67"), min.cutoff = "q9",  pt.size = 1, ncol=4, cols = c("lightgrey","red"))
+dev.off()
+
+
+
+```
+
+
+#assign cell types ###
+```{r}
+#assign each cluster cell type
+Idents(object = data.combined) <- "integrated_snn_res.0.3"
+current.cluster.ids <- c(0:18)
+new.cluster.ids <- c("Lymphoid","Myeloid","Myeloid",#2
+                     "Ambiguous","Tumor/normal","Myeloid",#5
+                     "Tumor/normal","Myeloid","Myeloid",#8
+                     "Ambiguous","Tumor/normal","Lymphoid.Cycling",#11
+                     "Myeloid.Cycling","Tumor/normal","Tumor/normal",#14
+                     "Tumor/normal","Tumor/normal","Tumor/normal",#17
+                     "Tumor/normal") #18
+
+
+Idents(object = data.combined) <- plyr::mapvalues(x = Idents(object = data.combined), from = current.cluster.ids, to = new.cluster.ids)
+
+data.combined@meta.data$celltype <- Idents(object = data.combined)
+data.combined@meta.data$celltype <- factor(data.combined@meta.data$celltype, levels = c("Lymphoid","Myeloid","Lymphoid.Cycling","Myeloid.Cycling","Tumor/normal","Ambiguous"))
+
+library(colorspace)
+library(scales)
+colorsCluster = c(qualitative_hcl(5),"grey")
+
+outfile = paste(prefix1,"_UMAP.Celltype.png",sep="")
+png(filename = outfile,width = 800, height = 800)
+plot <- DimPlot(object = data.combined, reduction = "umap", group.by = "celltype", label = TRUE, label.size = 8, pt.size = 1, cols = colorsCluster, raster=FALSE)
+dev.off()
+
+#outfile = paste(prefix1,"_UMAP.Celltype.noLabel.png",sep="")
+#png(filename = outfile,width = 800, height = 800)
+outfile = paste(prefix1,"_UMAP.Celltype.noLabel.tiff",sep="")
+tiff(file=outfile, width=3500, height=3000, res=600)
+DimPlot(object = data.combined, reduction = "umap", group.by = "celltype", label = FALSE, label.size = 20, pt.size = 1, cols = colorsCluster, raster=FALSE)
+dev.off()
+
+saveRDS(data.combined,file=paste(prefix1, ".rds", sep=""))
+#data.combined = readRDS(file=paste(prefix1, ".rds", sep=""))
+```
+
+
+## Write the files into separate populations for subset analysis
+```{r}
+ids = rownames(subset(data.combined@meta.data,celltype %in% c("Lymphoid","Lymphoid.Cycling")))
+fileConn<-file(paste(prefix1,".Lymphoid.ID.txt",sep=""))
+writeLines(ids, fileConn)
+
+ids = rownames(subset(data.combined@meta.data,celltype %in% c("Myeloid","Myeloid.Cycling")))
+fileConn<-file(paste(prefix1,".Myeloid.ID.txt",sep=""))
+writeLines(ids, fileConn)
+
+ids = rownames(subset(data.combined@meta.data,celltype %in% c("Tumor/normal","Ambiguous")))
+fileConn<-file(paste(prefix1,".NonImmune.Ambiguous.txt",sep=""))
+writeLines(ids, fileConn)
+
+```
+
+
+
+#calculate each cell type's fraction in each sample ###
+```{r}
+## Enumerate per sample
+totalNum=c(table(data.combined@meta.data$ID)[[1]])
+Group = names(table(data.combined@meta.data$ID))
+table_sub = data.frame()
+table_sub = subset(data.combined@meta.data, ID==Group[1])
+percentages=as.data.frame((table(table_sub$celltype)))$Freq
+table1 = percentages
+
+m1 = data.combined@meta.data
+
+for(i in 2:length(Group)){
+  id = Group[i]
+  n_total = table(data.combined@meta.data$ID)[[i]]
+  totalNum=c(totalNum,n_total)
+  
+  table_sub = data.frame()
+  table_sub = subset(data.combined@meta.data, ID==id)
+  
+  percentages=as.data.frame((table(table_sub$celltype)))$Freq
+  table1=as.data.frame(rbind(table1,percentages))
+}
+
+table2 = as.data.frame(cbind(table1,Total=totalNum))
+rownames(table2)=Group
+colnames(table2)=c(levels(data.combined@meta.data$celltype),"Total")
+table2$CD45 = table2$Lymphoid+table2$Myeloid+table2$Lymphoid.Cycling+table2$Myeloid.Cycling
+
+sampleMap = unique(data.combined@meta.data[,c("ID","condition","CancerType")])
+rownames(sampleMap) = sampleMap$ID
+sampleMap = sampleMap[Group,]
+table2$condition = sampleMap$condition
+table2$CancerType = sampleMap$CancerType
+
+outfile = paste(prefix,"_CelltypeByID.txt",sep="")
+write.table(table2,file=outfile,sep="\t")
+
+```
+
+
+#generate bargraph or boxplots of different populations
+```{r}
+library(dplyr)
+library(ggplot2)
+library(reshape)
+
+##use table2 to generate percentages value
+table3 = table2
+#table3$Lymphoid = table2$`Lymphoid`+table2$`Lymphoid.Cycling`
+#table3$Myeloid = table2$`Myeloid`+table2$`Myeloid.Cycling`
+
+
+## compute the fraction against total
+table3 = table3 %>% rowwise()
+tableCD45 = table3 %>%  mutate_if(~ is.numeric(.x), ~ .x/CD45)
+tableCD45 = as.data.frame(tableCD45[,c(1:4,9)])
+rownames(tableCD45) = rownames(table2)
+tableCD45$ID = rownames(tableCD45)
+
+tableCD45_melt = melt(tableCD45,id.vars=c("ID","condition"))
+colnames(tableCD45_melt) = c("ID","Condition","Celltype","Fraction")
+colors = c("cyan","blue","pink","red")
+
+tableCD45_melt$Condition = factor(tableCD45_melt$Condition, levels = c("GBM.rec","GBM.pembro","met","met.pembro"))
+tableCD45_melt$Celltype = factor(tableCD45_melt$Celltype, levels = c("Lymphoid","Myeloid","Lymphoid.Cycling","Myeloid.Cycling"))
+
+width1 = length(levels(tableCD45_melt$Celltype))*200
+outfile = paste(prefix,"CellFractionBoxplot.AllCell.png",sep="_")
+png(filename = outfile,width = width1, height = 600)
+y = ggplot(data=tableCD45_melt, aes(x=Celltype,y=Fraction,fill=Condition)) +
+       #geom_violin(trim = FALSE)+
+       geom_boxplot(outlier.colour="black",width=0.8,outlier.shape=1,outlier.size=0)+
+       geom_point(aes(fill = Condition), size = 2, shape = 21, position = position_jitterdodge())+
+        scale_fill_manual(values=rep(colors,length(levels(tableCD45_melt$Celltype))))+
+      theme(
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size=20),
+        axis.text.y = element_text(size=28),
+        axis.ticks.x = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "none",
+        plot.title=element_text(face = "italic",size=32))+
+      ggtitle("CD45 cell fraction")
+y
+dev.off()
+```
+
+## get the wilcoxon p-value
+```{r}
+celltypeL = c()
+metsPval=c()
+GBMPval=c()
+
+for(i in 1:4){
+  celltypeL = c(celltypeL,colnames(tableCD45)[i])
+  a = wilcox.test(tableCD45[[i]]~tableCD45$condition,subset=tableCD45$condition %in% c("GBM.rec","GBM.pembro"))
+  GBMPval = c(GBMPval,a$p.value)
+  
+  b = wilcox.test(tableCD45[[i]]~tableCD45$condition,subset=tableCD45$condition %in% c("met","met.pembro"))
+  metsPval = c(metsPval,b$p.value)
+}
+
+table1 = data.frame(Type=celltypeL,mets.vs.Pembro.wilcox=metsPval,GBM.vs.Pembro.wilcox=GBMPval)
+outfile = paste(prefix,"_CelltypeFracDiff.WilcoxPval.csv",sep="")
+write.csv(table1,file=outfile)
+```
+

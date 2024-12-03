@@ -1,0 +1,229 @@
+
+#Load and generate metadata of all cells
+```{r}
+library(Seurat)
+library(Matrix)
+library(dplyr)
+
+
+RDSfile = "BrainMets.April2022/Seurat.MetsGBM.CombinedAnalysis.Apr2022.MinD0.1.sprd5.NN20.seed122.ep1000.rds"
+data.combined = readRDS(RDSfile)
+
+###### Percentage of each celltype in each sample ###########################################
+ids = rownames(subset(data.combined@meta.data,celltype %in% c("Lymphoid","Myeloid","Lymphoid.Cycling","Myeloid.Cycling")))
+subsetObject = subset(data.combined, cells = ids)
+
+#generate meta data files for Cellchat
+m1 <- subsetObject@meta.data
+m1 <- m1[,c("ID","condition","celltype")]
+write.csv(m1,file="Seurat.MetsGBM.CombinedAnalysis.Apr2022.MinD0.1.sprd5.NN20.seed122.ep1000.metaForCellchat.csv")
+
+rm(data.combined)
+rm(subsetObject)
+```
+
+#Load and generate metadata of lymphoid cells
+```{r}
+RDSfile = "/home/hugolab/DataRAID/BrainMets.April2022/Seurat.MetsGBM.CombinedAnalysis.Apr2022.Lymphoid.MinD0.1.sprd5.NN20.seed122.ep1000.rds"
+data.combined = readRDS(RDSfile)
+
+ids = rownames(subset(data.combined@meta.data,celltype %in% c(
+                                                      "CD8-IL7R-CD69-Tm",
+                                                      "CD8-ITGA1-ITGAL-Trm",
+                                                      "CD8-TCF7-CD226-Tprog.exh",
+                                                      "CD8-ISG High",
+                                                      "CD8-GZMK-CCL4-CCL5-Teff",
+                                                      "CD8-GZMH-GZMA-CD52-Teff",
+                                                      "CD8-VCAM1-IFNG-Tex",
+                                                      "CD8-CXCL13-LAG3-Tex",
+                                                      "CD4-IL7R-CCR7-CD40LG-Tcm",
+                                                      "CD4-CXCL13-CTLA4-Tex",
+                                                      "Treg",
+                                                      "IL7R-KLRB1-Tm",
+                                                      "CTL/NK",
+                                                      "CTL/NK-XCL1-XCL2",
+                                                      "Lymphoid.Cycling")))
+subsetObject = subset(data.combined, cells = ids)
+
+m1 <- subsetObject@meta.data
+m1 <- m1[c("ID","condition","celltype")]
+write.csv(m1,file="Seurat.MetsGBM.CombinedAnalysis.Apr2022.Lymphoid.MinD0.1.sprd5.NN20.seed122.ep1000.metaForCellchat.csv")
+
+rm(data.combined)
+rm(subsetObject)
+```
+
+#Load and generate metadata of myeloid cells
+```{r}
+RDSfile = "/home/hugolab/DataRAID/BrainMets.April2022/Seurat.MetsGBM.CombinedAnalysis.Apr2022.Myeloid.MinD0.1.sprd5.NN20.seed122.ep1000.rds"
+data.combined = readRDS(RDSfile)
+
+ids = rownames(subset(data.combined@meta.data,
+                      celltype %in% c("Microglia",
+                                      "Microglia-ISG-IL10",
+                                      "Microglia-Phagocytosis",
+                                      "Monocyte",
+                                      "Monocyte-ISG",
+                                      "Mphage-ISG-MRC1-LILRB2",
+                                      "Mphage-Angiogenesis",
+                                      "Mphage-MRC1-LYVE1",
+                                      "Mphage-Lysosome",
+                                      "Mphage-IL1B-CCL3-CCL4",
+                                      "cDC2",
+                                      "cDC1",
+                                      "pDC",
+                                      "Complement/RiboHigh",
+                                      "Myeloid.Cycling")))
+
+subsetObject = subset(data.combined, cells = ids)
+
+m1 <- subsetObject@meta.data
+m1 <- m1[c("ID","condition","celltype")]
+write.csv(m1,file="Seurat.MetsGBM.CombinedAnalysis.Apr2022.Myeloid.MinD0.1.sprd5.NN20.seed122.ep1000.metaForCellchat.csv")
+
+rm(data.combined)
+rm(subsetObject)
+```
+
+# create meta data with lymphoid and myeloid subset annotations
+```{r}
+
+all <- read.csv("Seurat.MetsGBM.CombinedAnalysis.Apr2022.MinD0.1.sprd5.NN20.seed122.ep1000.metaForCellchat.csv",header=T,row.names = 1)
+
+lymphoid <- read.csv("Seurat.MetsGBM.CombinedAnalysis.Apr2022.Lymphoid.MinD0.1.sprd5.NN20.seed122.ep1000.metaForCellchat.csv",header=T,row.names = 1)
+
+myeloid <- read.csv("Seurat.MetsGBM.CombinedAnalysis.Apr2022.Myeloid.MinD0.1.sprd5.NN20.seed122.ep1000.metaForCellchat.csv",header=T,row.names = 1)
+
+IDs <- Reduce(union, list(rownames(myeloid),rownames(lymphoid)))
+all <- all[IDs,]
+all$ID <- rownames(all)
+myeloid$ID <- rownames(myeloid)
+lymphoid$ID <- rownames(lymphoid)
+
+all1 <- all
+
+## update celltype of the full table with detailed celltype from subsluster analysis  
+all1 <- all1 %>%
+        left_join(myeloid, by = c("ID", "condition")) %>%
+        mutate(celltype = coalesce(celltype.y, celltype.x)) %>%
+        select(-celltype.x, -celltype.y)
+
+all1 <- all1 %>%
+        left_join(lymphoid, by = c("ID", "condition")) %>%
+        mutate(celltype = coalesce(celltype.y, celltype.x)) %>%
+        select(-celltype.x, -celltype.y)
+
+
+rownames(all1) <- all1$ID
+
+all1 <- subset(all1, all1$celltype %in% c(
+                                          #Lymphoid/Tcells
+                                          "CD8-IL7R-CD69-Tm",
+                                          "CD8-ITGA1-ITGAL-Trm",
+                                          "CD8-TCF7-CD226-Tprog.exh",
+                                          "CD8-ISG High",
+                                          "CD8-GZMK-CCL4-CCL5-Teff",
+                                          "CD8-GZMH-GZMA-CD52-Teff",
+                                          "CD8-VCAM1-IFNG-Tex",
+                                          "CD8-CXCL13-LAG3-Tex",
+                                          "CD4-IL7R-CCR7-CD40LG-Tcm",
+                                          "CD4-CXCL13-CTLA4-Tex",
+                                          "Treg",
+                                          "IL7R-KLRB1-Tm",
+                                          "CTL/NK",
+                                          "CTL/NK-XCL1-XCL2",
+                                          "Lymphoid.Cycling",
+                                          
+                                          #Myeloid 
+                                          "Microglia",
+                                          "Microglia-ISG-IL10",
+                                          "Microglia-Phagocytosis",
+                                          "Monocyte",
+                                          "Monocyte-ISG",
+                                          "Mphage-ISG-MRC1-LILRB2",
+                                          "Mphage-Angiogenesis",
+                                          "Mphage-MRC1-LYVE1",
+                                          "Mphage-Lysosome",
+                                          "Mphage-IL1B-CCL3-CCL4",
+                                          "Complement/RiboHigh",
+                                          "Myeloid.Cycling",                                     
+                                          
+                                          #DC                                          
+                                          "cDC2",
+                                          "cDC1",
+                                          "pDC"))
+
+all1$celltype <- factor(all1$celltype, levels = c(
+                                          #Lymphoid/Tcells
+                                          "CD8-IL7R-CD69-Tm",
+                                          "CD8-ITGA1-ITGAL-Trm",
+                                          "CD8-TCF7-CD226-Tprog.exh",
+                                          "CD8-ISG High",
+                                          "CD8-GZMK-CCL4-CCL5-Teff",
+                                          "CD8-GZMH-GZMA-CD52-Teff",
+                                          "CD8-VCAM1-IFNG-Tex",
+                                          "CD8-CXCL13-LAG3-Tex",
+                                          "CD4-IL7R-CCR7-CD40LG-Tcm",
+                                          "CD4-CXCL13-CTLA4-Tex",
+                                          "Treg",
+                                          "IL7R-KLRB1-Tm",
+                                          "CTL/NK",
+                                          "CTL/NK-XCL1-XCL2",
+                                          "Lymphoid.Cycling",
+                                          
+                                          #Myeloid 
+                                          "Microglia",
+                                          "Microglia-ISG-IL10",
+                                          "Microglia-Phagocytosis",
+                                          "Monocyte",
+                                          "Monocyte-ISG",
+                                          "Mphage-ISG-MRC1-LILRB2",
+                                          "Mphage-Angiogenesis",
+                                          "Mphage-MRC1-LYVE1",
+                                          "Mphage-Lysosome",
+                                          "Mphage-IL1B-CCL3-CCL4",
+                                          "Complement/RiboHigh",
+                                          "Myeloid.Cycling",                                     
+                                          
+                                          #DC                                          
+                                          "cDC2",
+                                          "cDC1",
+                                          "pDC"))
+            
+
+GBM1 <- all1[all1$condition=="GBM.rec",]
+GBM1 <- as.data.frame(GBM1[c(3)])
+
+GBM.pembro1 <- all1[all1$condition=="GBM.pembro",]
+GBM.pembro1 <- as.data.frame(GBM.pembro1[c(3)])
+
+Mets1 <- all1[all1$condition=="met",]
+Mets1 <- as.data.frame(Mets1[c(3)])
+
+Mets.pembro1 <- all1[all1$condition=="met.pembro",]
+Mets.pembro1 <- as.data.frame(Mets.pembro1[c(3)])
+
+table1 <- data.frame(celltype.GBM=as.numeric(table(GBM1$celltype)), 
+                     celltype.GBM.pembro=as.numeric(table(GBM.pembro1$celltype)),
+                     celltype.Mets=as.numeric(table(Mets1$celltype)),
+                     celltype.Mets.pembro=as.numeric(table(Mets.pembro1$celltype)),
+                     celltype.all=as.numeric(table(all1$celltype)))
+
+rownames(table1) <- names(table(GBM1$celltype))
+
+table1$celltype.GBM.pct <- table1$celltype.GBM / sum(table1$celltype.GBM)
+table1$celltype.GBM.pembro.pct <- table1$celltype.GBM.pembro / sum(table1$celltype.GBM.pembro)
+table1$celltype.Mets.pct <- table1$celltype.Mets / sum(table1$celltype.Mets)
+table1$celltype.Mets.pembro.pct <- table1$celltype.Mets.pembro / sum(table1$celltype.Mets.pembro)
+table1$celltype.all.pct <- table1$celltype.all / sum(table1$celltype.all)
+
+write.csv(table1,"Seurat.MetsGBM.CombinedAnalysis.Apr2022.CelltypeCounts.csv")
+
+all1 <- as.data.frame(all1[c("celltype")])
+
+write.table(GBM1,file="GBM.meta.txt",sep="\t",col.names = T)
+write.table(GBM.pembro1,file="GBM.pembro.meta.txt",sep="\t",col.names = T)
+write.table(Mets1,file="Mets.meta.txt",sep="\t",col.names = T)
+write.table(Mets.pembro1,file="Mets.pembro.meta.txt",sep="\t",col.names = T)
+write.table(all1,file="GBMMets.all.meta.txt",sep="\t",col.names = T)
+```
