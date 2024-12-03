@@ -1,0 +1,424 @@
+#Initialization
+#https://nbisweden.github.io/workshop-scRNAseq/labs/compiled/seurat/seurat_07_spatial.html
+#https://rdrr.io/github/dmcable/RCTD/f/vignettes/spatial-transcriptomics.Rmd
+```{r}
+library(Seurat)
+library(Matrix)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(readxl)
+library(scatterpie)
+library(spacexr)
+library(Matrix)
+library("RColorBrewer")
+
+
+prefix = "Visium.MetsGBM.CombinedAnalysis.Aug2022.SingleSetRef"
+
+infile = "Visium.MetsGBM.CombinedAnalysis.Aug2022.rds"
+
+sampleTable = "VisiumSamplelist.xlsx"
+
+
+```
+
+
+#Read the 10x output files
+```{r}
+
+data.merge = readRDS(file=infile)
+
+dirs <- read_xlsx(sampleTable)
+IDs = as.character(dirs$ID)
+Samplelist = IDs
+
+```
+
+#load scRNAseq data for each cancer type to generate reference set
+```{r}
+
+scFile = "/home/hugolab/DataRAID/BrainMets.Melanoma.Aug2022/MelanomaMets.scRNAseq.CombineOwnAndPublic.Aug2022.MinD0.1.sprd5.NN20.seed122.ep1000.rds"
+#scFile = "/home/hugolab/DataRAID/BrainMets.Lung.Aug2022/LungMets.scRNAseq.CombineOwnAndPublic.Aug2022.MinD0.1.sprd5.NN20.seed122.ep1000.rds"
+#scFile = "/home/hugolab/DataRAID/GBM.OwnAndPublic/GBM.scRNAseq.CombineOwnAndPublic.Aug2022.MinD0.1.sprd5.NN20.seed122.ep1000.rds"
+
+sc.combined <- readRDS(scFile)
+
+celltype_list = c("Myeloid","Tcell","Tumor","Vascular","BrainNormal","Bcell")
+#celltype_list = c("Myeloid","Lymphoid","Tumor","EC","BrainNormal")
+
+sc.combined.sub <- subset(sc.combined, celltype_combined %in% celltype_list)
+sc.combined.sub <- subset(sc.combined.sub, dataset %in% c("public"))
+
+sc.combined.sub@meta.data$celltype_combined <- factor(sc.combined.sub@meta.data$celltype_combined, levels = celltype_list) 
+
+
+gc()
+
+```
+
+##### Cell type decomposition using RCTD #####################
+```{r}
+
+
+#infile = paste("/home/hugolab/DataRAID/BrainMets.Lung.Aug2022/LungMets.scRNAseq.CombineOwnAndPublic.Aug2022", "_scTransformed.rds", sep="")
+
+#sc.combined.sub <- readRDS(infile)
+
+#set = "LungMets"
+
+## create single cell reference object ####
+counts <- sc.combined.sub@assays$RNA@counts # A matrix (or dgCmatrix) representing Digital Gene Expression (DGE)
+cell_types <- sc.combined.sub@meta.data$celltype_combined
+names(cell_types) <- rownames(sc.combined.sub@meta.data) # create cell_types named list
+cell_types <- as.factor(cell_types) # convert to factor data type
+#nUMI <- gbm.sub@meta.data$nCount_RNA
+#names(nUMI) <- rownames(gbm.sub@meta.data) # create nUMI named list
+
+#reference <- Reference(counts, cell_types, nUMI)
+reference <- Reference(counts, cell_types)
+
+## Examine reference object 
+print(dim(reference@counts)) 
+table(reference@cell_types) #number of occurences for each cell type
+
+#saveRDS(reference, file=paste(prefix,"RCTD.Reference","rds", sep="."))
+
+## Create SpatialRNA object for each sample################
+Imagelist = Images(object = data.merge)
+
+#for(i in 6:length(Samplelist)){
+for(i in 1:2){
+  image = Imagelist[i]
+  sample = Samplelist[i]
+  coord <- GetTissueCoordinates(data.merge[[image]], scale=NULL) #A numeric data.frame (or matrix) representing the spatial pixel locations. rownames are barcodes/pixel names, and there should be two columns for 'x' and for 'y'.
+
+  counts <- data.merge@assays$Spatial@counts[,rownames(coord)]#the original/unscaled 
+  
+  nUMI = data.merge@meta.data[rownames(coord),"nCount_Spatial"] #a named (by pixel barcode) list of total counts or UMI's appearing at each pixel.
+  names(nUMI) = rownames(coord)
+  
+  ### Create SpatialRNA object
+  rctd.object <- SpatialRNA(coord, counts, nUMI)
+  myRCTD <- create.RCTD(rctd.object, reference, max_cores = 2, UMI_min = 0 )
+  myRCTD <- run.RCTD(myRCTD, doublet_mode = 'full')
+  
+  saveRDS(myRCTD, file=paste(prefix,"RCTD.Results",sample,"rds", sep="."))
+  
+}
+
+#prefix1 = paste(prefix, ref_set, sep=".")
+
+```
+
+## plot RCTD cell type decomposition (normalized to 1 in sum) results ##############
+```{r}
+set = "MelanomaMets"
+celltype = c("Myeloid","Tcell","Tumor","Vascular","BrainNormal","Bcell")
+colorsCluster = c("#E41A1C","#377EB8","#984EA3","yellow","#F781BF","green")
+#colorsCluster = brewer.pal(n = 8, name = "Set1")
+
+# set = "GBM"
+# celltype = c("Myeloid","Lymphoid","Tumor","EC","BrainNormal")
+# colorsCluster = c("#E41A1C","#377EB8","#984EA3","yellow","#F781BF")
+
+
+## plot composition pie chart for each sample################
+for(i in 1:2){
+  image = Imagelist[i]
+  sample = Samplelist[i]
+  myRCTD = readRDS(file=paste(prefix,"RCTD.Results",sample,"rds", sep="."))
+  results <- myRCTD@results
+  
+  #in results, all_weights is the result of full-mode; when you run RCTD on any mode (including multi-mode), it still reports the results of full-mode.For the multi-mode results, you should use sub_weights. The difference is that in full-mode, all cell types are used and get a weight, whereas in multi-mode, the algorithm iteratively selects a subset of cell types that are likely to be on the pixel.
+
+  #weight_matrix <- gather_weights(myRCTD,results)
+  weight_matrix <- results$weights
+
+  # normalize the cell type proportions to sum to 1.
+  norm_weights = sweep(weight_matrix, 1, rowSums(weight_matrix), '/')# normalize the cell type proportions to sum to 1
+  coord <- GetTissueCoordinates(data.merge[[image]],scale=NULL) #A numeric data.frame (or matrix) representing the spatial pixel locations. rownames are barcodes/pixel names, and there should be two columns for 'x' and for 'y'
+  coord = coord[rownames(norm_weights),]
+  table = cbind(coord, norm_weights)
+  
+  outfile = paste(prefix,"SpatialCelltypeComposition","RCTD",sample,"png",sep=".")
+  png(filename = outfile,width = 9000, height = 9000)
+  t <- ggplot() + geom_scatterpie(aes(x=imagerow, y=imagecol), data=table,
+                           cols=celltype, pie_scale = 0.43) + coord_equal()+
+                          theme(legend.text = element_text(size=26),
+                                legend.key.size = unit(2, "cm"))+
+                          scale_fill_manual(values=colorsCluster)
+  print(t)
+  dev.off()
+  
+}
+
+```
+
+
+## subset spots absent of tumor based on RCTD decomposition in brain mets, for infercnv#######
+```{r}
+
+#Imagelist = Images(object = data.merge)
+
+weight_cutoff = 0.01
+celltype = c("Tumor")
+
+for(i in 1:length(celltype)){
+  subtype = celltype[i]
+  
+  ID_subset = c()
+  for(j in 1:4){
+    #image = Imagelist[j]
+    sample = Samplelist[j]
+    myRCTD = readRDS(file=paste(prefix,"RCTD.Results",sample,"rds", sep="."))
+    results <- myRCTD@results
+    
+    weight_matrix <- results$weights
+    norm_weights = sweep(weight_matrix, 1, rowSums(weight_matrix), '/')
+    
+    table = as.data.frame(norm_weights)
+    
+    ids = rownames(subset(table, table[[subtype]] < weight_cutoff))
+    
+    ID_subset = c(ID_subset, ids)
+  }
+  
+  fileConn<-file(paste(prefix, "No", subtype, "ID","Mets","txt" ,sep="."))
+  writeLines(ID_subset, fileConn)
+  
+}
+
+metadata = data.merge@meta.data
+metadata$NoTumor <- 0
+metadata[ID_subset,]$NoTumor <- 1
+data.merge@meta.data = metadata
+
+Idents(data.merge) <- data.merge$NoTumor
+outfile = paste(prefix,"_NoTumorInMets.png",sep="")
+png(filename = outfile,width = 1600, height = 400)
+SpatialDimPlot(data.merge)
+dev.off()
+
+```
+
+
+
+## subset spots absent of other cell type based on RCTD decomposition ########################
+```{r}
+
+#Imagelist = Images(object = data.merge)
+
+weight_cutoff = 0.01
+
+celltype = c("Myeloid","Lymphoid","Vascular")
+
+for(i in 1:length(celltype)){
+  subtype = celltype[i]
+  
+  ID_subset = c()
+  for(j in 1:length(Samplelist)){
+    #image = Imagelist[j]
+    sample = Samplelist[j]
+    myRCTD = readRDS(file=paste(prefix,"RCTD.Results",sample,"rds", sep="."))
+    results <- myRCTD@results
+    
+    weight_matrix <- results$weights
+    norm_weights = sweep(weight_matrix, 1, rowSums(weight_matrix), '/')
+    
+    table = as.data.frame(norm_weights)
+    
+    ids = rownames(subset(table, table[[subtype]] < weight_cutoff))
+    
+    if(subtype == "Lymphoid"){
+      ids_2 = rownames(subset(table, table[["Tcell"]] < weight_cutoff))
+      ids = union(ids, ids_2)
+    }
+    
+    if(subtype == "Vascular"){
+       ids_2 = rownames(subset(table, table[["EC"]] < weight_cutoff))
+       ids = c(ids, ids_2)
+    }
+    # if(!is.null(table$vSMC)){
+    #   table$EC_total = table$vSMC+table$EC
+    # }else{
+    #   table$EC_total = table$EC
+    # }
+    # 
+    # if(subtype == "Vascular"){
+    #   ids = rownames(subset(table, table[["EC_total"]] < weight_cutoff))
+    # }   
+    
+    ID_subset = c(ID_subset, ids)
+  }
+  
+  fileConn<-file(paste(prefix, "No", subtype, "ID","txt" ,sep="."))
+  writeLines(ID_subset, fileConn)
+  
+}
+
+
+#B cells and vSMC cells was only included for mets in the decomposition step
+celltype = c("Bcell")
+
+for(i in 1:length(celltype)){
+  subtype = celltype[i]
+  
+  ID_subset = c()
+  for(j in 1:4){
+    #image = Imagelist[j]
+    sample = Samplelist[j]
+    myRCTD = readRDS(file=paste(prefix,"RCTD.Results",sample,"rds", sep="."))
+    results <- myRCTD@results
+    
+    weight_matrix <- results$weights
+    norm_weights = sweep(weight_matrix, 1, rowSums(weight_matrix), '/')
+    
+    table = as.data.frame(norm_weights)
+    
+    ids = rownames(subset(table, table[[subtype]] < weight_cutoff))
+
+    ID_subset = c(ID_subset, ids)
+  }
+  
+  fileConn<-file(paste(prefix, "No", subtype, "ID","txt" ,sep="."))
+  writeLines(ID_subset, fileConn)
+  
+}
+
+
+
+id_file = "Visium.MetsGBM.CombinedAnalysis.Aug2022.SingleSetRef.No.Vascular.ID.txt"
+ID_subset <- as.character(read.table(id_file, header = FALSE)[,1])
+
+metadata = data.merge@meta.data
+metadata$NoType <- 0
+metadata[ID_subset,]$NoType <- 1
+metadata$NoType = factor(metadata$NoType, levels=c(0,1))
+
+data.merge@meta.data = metadata
+
+
+Idents(data.merge) <- data.merge$NoType
+outfile = paste(prefix,"_NoVascular.png",sep="")
+png(filename = outfile,width = 1600, height = 200)
+SpatialDimPlot(data.merge, cols.highlight = c("#F4A582","#B2182B"))
+dev.off()
+
+
+```
+
+
+## subset spots with tumor or normal brain presence based on RCTD decomposition ###
+```{r}
+
+#Imagelist = Images(object = data.merge)
+
+weight_cutoff = 0.2
+celltype = c("Tumor")
+#celltype = c("BrainNormal")
+#celltype = c("Vascular")
+
+for(i in 1:length(celltype)){
+  subtype = celltype[i]
+  
+  ID_subset = c()
+  for(j in 1:length(Samplelist)){
+    #image = Imagelist[j]
+    sample = Samplelist[j]
+    myRCTD = readRDS(file=paste(prefix,"RCTD.Results",sample,"rds", sep="."))
+    results <- myRCTD@results
+    
+    weight_matrix <- results$weights
+    norm_weights = sweep(weight_matrix, 1, rowSums(weight_matrix), '/')
+    
+    table = as.data.frame(norm_weights)
+    
+    # if(!is.null(table$vSMC)){
+    #   table$EC_total = table$vSMC+table$EC
+    # }else{
+    #   table$EC_total = table$EC
+    # }
+    # 
+    
+    ids = rownames(subset(table, table[[subtype]] >= weight_cutoff))
+    
+    if(subtype == "Vascular"){
+       ids_2 = rownames(subset(table, table[["EC"]] >= weight_cutoff))
+       ids = c(ids, ids_2)
+    }
+    
+    ID_subset = c(ID_subset, ids)
+  }
+  
+  fileConn<-file(paste(prefix, "With", subtype, "Per0.2","ID","txt" ,sep="."))
+  writeLines(ID_subset, fileConn)
+  
+}
+
+# metadata = data.merge@meta.data
+# metadata$WithCell <- "N"
+# metadata[ID_subset,]$WithCell <- "Y"
+# data.merge@meta.data = metadata
+# data.merge@meta.data$WithCell = factor(data.merge@meta.data$WithCell, levels = c("N","Y"))
+# 
+# Idents(data.merge) <- data.merge$WithCell
+outfile = paste(prefix,"WithTumor","Per0.2","png",sep=".")
+png(filename = outfile,width = 1600, height = 400)
+
+SpatialDimPlot(data.merge,cells.highlight=ID_subset) #+ scale_fill_manual(values=c("N"="grey", "Y"="red"))
+#SpatialPlot(data.merge, cols = c("grey","red"))
+dev.off()
+
+```
+
+
+
+## subset pure tumor spots based on RCTD decomposition ####################
+```{r}
+Imagelist = Images(object = data.merge)
+ID_subset = c()
+weight_cutoff = 0.9
+
+for(i in 1:length(Samplelist)){
+  image = Imagelist[i]
+  sample = Samplelist[i]
+  myRCTD = readRDS(file=paste(prefix,ref_set,"RCTD.Results",sample,"rds", sep="."))
+  results <- myRCTD@results
+  
+  weight_matrix <- results$weights
+  norm_weights = sweep(weight_matrix, 1, rowSums(weight_matrix), '/')
+  
+  coord <- GetTissueCoordinates(data.merge[[image]],scale=NULL) 
+  coord = coord[rownames(norm_weights),]
+  table = cbind(coord, norm_weights)
+  
+  ids = rownames(subset(table, table$Tumor >= weight_cutoff))
+  
+  ID_subset = c(ID_subset, ids)
+}
+
+fileConn<-file(paste(prefix,"PureTumorSpot.ID.txt",sep="."))
+writeLines(ID_subset, fileConn)
+
+```
+
+
+#Collect data function if using "multi" mode in RCTD
+```{r}
+# Collects RCTD results
+gather_weights <- function(RCTD, results) {
+  cell_type_names = RCTD@cell_type_info$renorm[[2]]
+  barcodes <- colnames(RCTD@spatialRNA@counts)
+  N <- length(results)
+  weights = Matrix(0, nrow = N, ncol = length(cell_type_names))
+  rownames(weights) = barcodes
+  colnames(weights) = cell_type_names
+
+  for(i in 1:N) {
+    weights[i,] = results[[i]]$all_weights
+  }
+  return(weights)
+}
+
+```
